@@ -16,6 +16,7 @@ import { AIConfigError, callAI, RetryableError } from '../ai/score'
 import { ISSUE_PROMPT, PROMPT_VERSION } from './prompt'
 import { fetchGroups } from '../services/archive'
 import { getGroupConfig } from '../group/config'
+import { refreshIssueSessions } from './sessions'
 
 const CARRY_DAYS = 3
 const ROOM_CONCURRENCY = 3
@@ -443,7 +444,7 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
   )
   // 群名：从归档服务取；取不到就用群会话里存的名字
   const names = new Map((await query<{ room_id: string; name: string }>(
-    "SELECT room_id, MAX(customer_name) name FROM ss_sessions WHERE source = 'wg' GROUP BY room_id"
+    "SELECT room_id, MAX(customer_name) name FROM ss_sessions WHERE source IN ('wgr', 'wg') GROUP BY room_id"
   )).map((r) => [r.room_id, r.name]))
   try {
     for (const g of await fetchGroups(await getDeptSetting(dept.code, 'archive'))) if (g.room_name) names.set(g.room_id, g.room_name)
@@ -469,6 +470,8 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
       for (const [roomId, name] of names) {
         if (name) await execute("UPDATE wg_issues SET room_name = ? WHERE department_id = ? AND room_id = ? AND room_name = ''", [name.slice(0, 255), dept.id, roomId]).catch(() => undefined)
       }
+      // 会话记录里的对公群跟着更新
+      await refreshIssueSessions(dept).catch((e) => console.error('[issues] 群问题写进会话记录失败', e))
       running.delete(dept.code)
       console.log(`[issues] ${dept.name} ${from} ~ ${to} 分析结束：${p.rooms} 个群，调 AI ${p.calls} 次，失败 ${p.failed}`)
     }

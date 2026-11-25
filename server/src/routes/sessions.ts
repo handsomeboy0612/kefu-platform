@@ -34,6 +34,9 @@ interface SessionDbRow {
   sc_total: string | number | null
   sc_grade: string | null
   sc_reviewed: number | null
+  issue_id: number
+  issue_status: string
+  issue_summary: string
 }
 
 const toView = (r: SessionDbRow): Record<string, unknown> => ({
@@ -58,13 +61,17 @@ const toView = (r: SessionDbRow): Record<string, unknown> => ({
   scoreStatus: r.sc_status || 'none',
   aiTotal: r.sc_total == null ? null : Number(r.sc_total),
   aiGrade: r.sc_grade || '',
-  aiReviewed: !!r.sc_reviewed
+  aiReviewed: !!r.sc_reviewed,
+  /** 对公群（source = 'wg'）：AI 整理的群问题编号、状态（按主管改过的）、摘要 */
+  issueId: Number(r.issue_id || 0),
+  issueStatus: r.issue_status || '',
+  issueSummary: r.issue_summary || ''
 })
 
 const SELECT = `
   SELECT s.session_id, s.source, s.chat_user_id, s.customer_name, s.sys_user_id, s.channel, s.start_time, s.end_time, s.assign_time,
          s.star_score, s.msg_count, s.user_msg_count, s.kf_msg_count, s.msgs_synced, m.nickname, m.participate, m.active,
-         sc.status sc_status, sc.total_score sc_total, sc.grade sc_grade, sc.reviewed sc_reviewed`
+         sc.status sc_status, sc.total_score sc_total, sc.grade sc_grade, sc.reviewed sc_reviewed, s.issue_id, s.issue_status, s.issue_summary`
 
 export async function deptScope(req: FastifyRequest): Promise<{ dept: Department; projectId: string }> {
   const dept = await resolveDepartment(req, (req.query as { dept?: string }).dept)
@@ -122,7 +129,7 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     const channels = await query<{ channel: number }>(
       `SELECT DISTINCT s.channel FROM ss_sessions s
        JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-       WHERE s.project_id = ? ORDER BY s.channel`,
+       WHERE s.project_id = ? AND s.source <> 'wgr' ORDER BY s.channel`,
       [dept.id, projectId]
     )
     return {

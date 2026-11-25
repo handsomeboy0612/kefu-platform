@@ -26,7 +26,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       FROM ss_sessions s
       JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
       LEFT JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id AND sc.status = 'ok'
-      WHERE s.project_id = ? AND s.start_time BETWEEN ? AND ?${onlyAssessed ? ' AND m.participate = 1 AND m.active = 1' : ''}`
+      WHERE s.project_id = ? AND s.source <> 'wgr' AND s.start_time BETWEEN ? AND ?${onlyAssessed ? ' AND m.participate = 1 AND m.active = 1' : ''}`
     const params = [dept.id, projectId, begin, end]
     const agg = `
       COUNT(*) sessions,

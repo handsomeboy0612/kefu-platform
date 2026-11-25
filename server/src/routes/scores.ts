@@ -46,12 +46,13 @@ export async function scoreRoutes(app: FastifyInstance): Promise<void> {
     const { dept, projectId } = await deptScope(req)
     if (!projectId) throw new HttpError(400, '本部门还没有填 SaleSmartly 项目')
     const { cond, params } = filterSql(parseFilter((req.body || {}) as Record<string, unknown>))
-    const [c] = await query<{ total: number; eligible: number; scored: number; no_customer: number; not_assessed: number }>(
+    const [c] = await query<{ total: number; eligible: number; scored: number; no_customer: number; not_assessed: number; group_skipped: number }>(
       `SELECT COUNT(*) total,
               SUM(${BATCH_ELIGIBLE}) eligible,
               SUM(sc.status = 'ok') scored,
-              SUM(s.user_msg_count = 0 AND (sc.session_id IS NULL OR sc.status <> 'ok')) no_customer,
-              SUM(NOT (m.participate = 1 AND m.active = 1) AND s.user_msg_count > 0 AND (sc.session_id IS NULL OR sc.status <> 'ok')) not_assessed
+              SUM(s.source = 'wg' AND (sc.session_id IS NULL OR sc.status <> 'ok')) group_skipped,
+              SUM(s.source = 'ss' AND s.user_msg_count = 0 AND (sc.session_id IS NULL OR sc.status <> 'ok')) no_customer,
+              SUM(s.source = 'ss' AND NOT (m.participate = 1 AND m.active = 1) AND s.user_msg_count > 0 AND (sc.session_id IS NULL OR sc.status <> 'ok')) not_assessed
        ${SESSION_FROM}${cond}`,
       [dept.id, projectId, ...params]
     )
@@ -68,6 +69,7 @@ export async function scoreRoutes(app: FastifyInstance): Promise<void> {
         scored: Number(c?.scored || 0),
         noCustomer: Number(c?.no_customer || 0),
         notAssessed: Number(c?.not_assessed || 0),
+        groupSkipped: Number(c?.group_skipped || 0),
         avgTokens: tok?.n ? Math.round(Number(tok.avg || 0)) : 0,
         model: ai.model,
         aiConfigured: isSectionConfigured('ai', ai),

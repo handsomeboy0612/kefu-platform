@@ -24,6 +24,7 @@ import { dashboardRoutes } from './routes/dashboard'
 import { groupRoutes } from './routes/group'
 import { issueRoutes } from './routes/issues'
 import { startGroupScheduler } from './group/sync'
+import { refreshAllIssueSessions } from './issues/sessions'
 import { startNightlyScheduler } from './ai/service'
 import { startScheduler } from './sync/salesmartly-sync'
 
@@ -34,6 +35,8 @@ async function main(): Promise<void> {
   await ensureSchema()
   await seed()
   await migrateLegacySettings()
+  // 会话记录里的对公群 = AI 群问题：启动时对一遍（第一次升级时把已有的群问题写进去）
+  void refreshAllIssueSessions()
 
   await app.register(cookie)
   app.addHook('preHandler', authHook)

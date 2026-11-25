@@ -33,7 +33,7 @@ const ymd = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${
 const sec = (s: number | null): string => (s == null ? '—' : s < 60 ? `${s}秒` : s < 3600 ? `${Math.round(s / 60)}分钟` : `${Math.floor(s / 3600)}小时${Math.round((s % 3600) / 60)}分`)
 const hms = (t: number): string => fmtTime(t).slice(5)
 
-const StatusPill: React.FC<{ s: string; overridden?: boolean }> = ({ s, overridden }) => (
+export const StatusPill: React.FC<{ s: string; overridden?: boolean }> = ({ s, overridden }) => (
   <span className={`pill-tag ${STATUS_CLASS[s] || 'muted'}`}>{STATUS_TEXT[s] || s}{overridden ? ' · 改过' : ''}</span>
 )
 
@@ -49,7 +49,7 @@ const Judge: React.FC<{ label: string; value: number | null; onChange: (v: numbe
   </div>
 )
 
-const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClose: () => void; onChanged: () => void }> = ({ deptCode, id, onClose, onChanged }) => {
+export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClose: () => void; onChanged: () => void }> = ({ deptCode, id, onClose, onChanged }) => {
   const [d, setD] = useState<Detail | null>(null)
   const [rv, setRv] = useState<{ boundaryOk: number | null; handlerOk: number | null; statusOk: number | null; note: string }>({ boundaryOk: null, handlerOk: null, statusOk: null, note: '' })
   const [saving, setSaving] = useState(false)
@@ -199,7 +199,14 @@ const IssuesPage: React.FC = () => {
   }
 
   const columns = [
-    { title: '日期', dataIndex: 'day', width: 100, render: (v: string, r: Issue) => <div>{v.slice(5)}<div className="kpi-cell-sub">{r.firstCustomerAt ? hms(r.firstCustomerAt).slice(6) : ''}</div></div> },
+    {
+      title: '日期', dataIndex: 'day', width: 100,
+      render: (v: string, r: Issue) => (
+        <div>{v.slice(5)}<div className="kpi-cell-sub">{r.firstCustomerAt ? hms(r.firstCustomerAt).slice(6) : ''}</div>
+          {v === ymd(new Date()) && <Tooltip content="今天的聊天还在继续，群里有新消息时 AI 会重新整理，这个问题可能会变。核对建议看前一天及以前的。"><span className="pill-tag muted" style={{ marginTop: 2 }}>还可能变</span></Tooltip>}
+        </div>
+      )
+    },
     { title: '问题', dataIndex: 'summary', render: (v: string, r: Issue) => <div><div style={{ fontWeight: 500 }}>{v}</div><div className="kpi-cell-sub">{r.roomName} · {r.messageCount} 条消息</div></div> },
     {
       title: '处理人', dataIndex: 'handlerName', width: 150,
@@ -254,7 +261,7 @@ const IssuesPage: React.FC = () => {
 
       <div className={`notice ${pct !== null && pct >= 90 && (acc?.reviewed || 0) >= 30 ? 'success' : ''}`} style={{ marginTop: 0 }}>
         <b>核对进度</b>：已核对 {acc?.reviewed || 0} 个问题{pct !== null ? `，三项全对 ${acc?.allOk} 个，准确率 ${pct}%（边界 ${acc?.boundaryOk}、处理人 ${acc?.handlerOk}、是否解决 ${acc?.statusOk} 个对）` : ''}。
-        约定：核对满 30 个、准确率到 90%，再把技术支持部第二项改成按 AI 结果计分。点问题打开，看聊天记录，三项各点「对 / 不对」。
+        约定：核对满 30 个、准确率到 90%，再把技术支持部第二项改成按 AI 结果计分。点问题打开，看聊天记录，三项各点「对 / 不对」；今天的问题还可能变，建议核对前一天及以前的。
       </div>
 
       <div className="panel filter-panel">

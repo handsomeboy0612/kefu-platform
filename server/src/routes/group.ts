@@ -10,6 +10,7 @@ import { archiveGet, fetchGroupMembers, fetchGroups, type ArchiveHealth } from '
 import { describeFetchError } from '../services/salesmartly'
 import { getGroupConfig, saveGroupConfig, type GroupConfig } from '../group/config'
 import { GroupBusyError, groupProgress, startGroupSync } from '../group/sync'
+import { refreshIssueSessions } from '../issues/sessions'
 
 const AGENT_OFFLINE_SEC = 30 * 60
 
@@ -44,7 +45,7 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
     )
     const projectId = await deptProjectId(dept)
     const [cnt] = await query<{ n: number; last: number | null }>(
-      "SELECT COUNT(*) n, MAX(end_time) last FROM ss_sessions WHERE project_id = ? AND source = 'wg'", [projectId]
+      "SELECT COUNT(*) n, MAX(end_time) last FROM ss_sessions WHERE project_id = ? AND source = 'wgr'", [projectId]
     )
     return {
       success: true,
@@ -148,6 +149,8 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
       await execute('UPDATE wg_staff SET manual = 1, sys_user_id = ?, updated_by = ?, updated_at = ? WHERE user_id = ?', [id, req.user!.username, now(), userId])
     }
     await audit(req, 'group_staff_map', userId, b, dept.id)
+    // 会话记录里的群问题按新的挂靠对一遍
+    await refreshIssueSessions(dept).catch((e) => console.error('[issues] 群问题写进会话记录失败', e))
     return { success: true }
   })
 

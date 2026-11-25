@@ -6,6 +6,7 @@ import { audit, HttpError, resolveDepartment, type Department } from '../auth'
 import { execute, now, query } from '../db'
 import { deptProjectId } from '../members'
 import { AnalyzeBusyError, analyzeProgress, startAnalyze } from '../issues/analyze'
+import { refreshIssueSessions } from '../issues/sessions'
 
 interface IssueRow {
   id: number; room_id: string; room_name: string; day: string; anchor_msg_id: string; summary: string
@@ -91,7 +92,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const projectId = await deptProjectId(dept)
     const ruleRows = await query<{ sys_user_id: number; n: number }>(
       `SELECT s.sys_user_id, COUNT(*) n FROM ss_sessions s JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-       WHERE s.project_id = ? AND s.source = 'wg' AND s.start_time >= UNIX_TIMESTAMP(?) AND s.start_time < UNIX_TIMESTAMP(?) + 86400
+       WHERE s.project_id = ? AND s.source = 'wgr' AND s.start_time >= UNIX_TIMESTAMP(?) AND s.start_time < UNIX_TIMESTAMP(?) + 86400
        GROUP BY s.sys_user_id`,
       [dept.id, projectId, `${from} 00:00:00`, `${to} 00:00:00`]
     )
@@ -237,6 +238,8 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     }
     if (!Object.keys(patch).length) throw new HttpError(400, '没有要改的')
     await mark(req, patch)
+    // 会话记录里这一行跟着改（处理人换了会挂到新的人名下）
+    await refreshIssueSessions(await groupDept(req))
     return { success: true }
   })
 

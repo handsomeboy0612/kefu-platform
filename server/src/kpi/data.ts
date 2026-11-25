@@ -95,21 +95,21 @@ export async function coverage(projectId: string, deptId: number, begin: number,
      FROM ss_sessions s
      JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
      LEFT JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id
-     WHERE s.project_id = ? AND s.start_time BETWEEN ? AND ?`,
+     WHERE s.project_id = ? AND s.source = 'ss' AND s.start_time BETWEEN ? AND ?`,
     [deptId, projectId, begin, end]
   )
   return { total: Number(r?.total || 0), scored: Number(r?.scored || 0), eligible: Number(r?.eligible || 0) }
 }
 
 /**
- * 对公群（技术支持部第二项）：每人接手的群会话、涉及的群数，以及每个群会话的首响 / 均响（秒）。
+ * 对公群（技术支持部第二项）：按规则切的群会话（source = 'wgr'，核对准确率达标后改成按 AI 群问题）。每人接手的群会话、涉及的群数，以及每个群会话的首响 / 均响（秒）。
  * 等待从客户发言算起（客户连着发、间隔不超过 60 秒的算一轮，从这一轮最后一句算）到客服回复；派单等系统消息不算。
  */
 export async function groupStats(projectId: string, deptId: number, begin: number, end: number): Promise<Record<string, { name: string; roomCnt: number; threads: Array<{ firstSec: number | null; avgSec: number | null }> }>> {
   const sessions = await query<{ session_id: string; sys_user_id: number; room_id: string; nickname: string }>(
     `SELECT s.session_id, s.sys_user_id, s.room_id, m.nickname FROM ss_sessions s
      JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-     WHERE s.project_id = ? AND s.source = 'wg' AND s.start_time BETWEEN ? AND ?`,
+     WHERE s.project_id = ? AND s.source = 'wgr' AND s.start_time BETWEEN ? AND ?`,
     [deptId, projectId, begin, end]
   )
   if (!sessions.length) return {}

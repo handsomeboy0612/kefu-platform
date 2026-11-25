@@ -170,7 +170,7 @@ export async function kpiRoutes(app: FastifyInstance): Promise<void> {
               EXISTS (SELECT 1 FROM kpi_exemptions e WHERE e.project_id = s.project_id AND e.session_id = s.session_id AND e.kind = 'reply') exempt
        FROM ss_sessions s
        JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-       WHERE s.project_id = ? AND s.sys_user_id = ? AND s.user_msg_count > 0 AND s.end_time > 0
+       WHERE s.project_id = ? AND s.source = 'ss' AND s.sys_user_id = ? AND s.user_msg_count > 0 AND s.end_time > 0
          AND s.start_time BETWEEN ? AND ? AND ${ANCHOR} BETWEEN ? AND ?
          AND IF(s.msgs_synced = 1,
                 NOT EXISTS (SELECT 1 FROM ss_messages x WHERE x.project_id = s.project_id AND x.session_id = s.session_id AND x.sender_type = 'staff' AND x.recalled = 0),
@@ -204,7 +204,7 @@ export async function kpiRoutes(app: FastifyInstance): Promise<void> {
               EXISTS (SELECT 1 FROM kpi_exemptions e WHERE e.project_id = s.project_id AND e.session_id = s.session_id AND e.kind = 'bad_review') exempt
        FROM ss_sessions s
        JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-       WHERE s.project_id = ? AND s.sys_user_id = ? AND s.star_score > 0
+       WHERE s.project_id = ? AND s.source = 'ss' AND s.sys_user_id = ? AND s.star_score > 0
          AND s.start_time BETWEEN ? AND ? AND ${ANCHOR} BETWEEN ? AND ?
        ORDER BY s.star_score, s.start_time DESC`,
       [dept.id, projectId, Number(q.member), begin - 7 * 86400, end, begin, end]

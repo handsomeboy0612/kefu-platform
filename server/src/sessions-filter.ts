@@ -13,7 +13,7 @@ export interface SessionFilter {
   /** scored / unscored / failed */
   score: string
   grade: string
-  /** ss = SaleSmartly 在线咨询，wg = 对公群；空 = 全部 */
+  /** ss = SaleSmartly 在线咨询，wg = 对公群（AI 整理的群问题）；空 = 全部 */
   source: string
 }
 
@@ -37,12 +37,12 @@ export function parseFilter(q: Record<string, unknown>): SessionFilter {
   }
 }
 
-/** 公共 FROM：参数顺序是 [部门 id, 项目 id] */
+/** 公共 FROM：参数顺序是 [部门 id, 项目 id]。按规则切的群会话（wgr）只给绩效用，不在会话记录里出现 */
 export const SESSION_FROM = `
   FROM ss_sessions s
   JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
   LEFT JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id
-  WHERE s.project_id = ?`
+  WHERE s.project_id = ? AND s.source <> 'wgr'`
 
 export function filterSql(f: SessionFilter): { cond: string; params: unknown[] } {
   const where: string[] = []
@@ -69,7 +69,8 @@ export function filterSql(f: SessionFilter): { cond: string; params: unknown[] }
   }
   switch (f.score) {
     case 'scored': where.push("sc.status = 'ok'"); break
-    case 'unscored': where.push("(sc.session_id IS NULL OR sc.status <> 'ok')"); break
+    // 群问题不做质检评分，不算「未评分」
+    case 'unscored': where.push("s.source = 'ss' AND (sc.session_id IS NULL OR sc.status <> 'ok')"); break
     case 'failed': where.push("sc.status = 'failed'"); break
   }
   if (f.source) { where.push('s.source = ?'); params.push(f.source) }
@@ -77,5 +78,5 @@ export function filterSql(f: SessionFilter): { cond: string; params: unknown[] }
   return { cond: where.length ? ` AND ${where.join(' AND ')}` : '', params }
 }
 
-/** 能进批量评分的：参与考核、还在项目里的客服，客户发过言，还没评成功过 */
-export const BATCH_ELIGIBLE = "m.participate = 1 AND m.active = 1 AND s.user_msg_count > 0 AND (sc.session_id IS NULL OR sc.status <> 'ok')"
+/** 能进批量评分的：在线咨询（群会话不批量评，绩效的 AI 质量只算在线咨询）、参与考核还在项目里的客服、客户发过言、还没评成功过 */
+export const BATCH_ELIGIBLE = "s.source = 'ss' AND m.participate = 1 AND m.active = 1 AND s.user_msg_count > 0 AND (sc.session_id IS NULL OR sc.status <> 'ok')"

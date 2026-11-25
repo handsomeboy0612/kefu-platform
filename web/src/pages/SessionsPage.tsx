@@ -7,6 +7,7 @@ import PageHeader from '../components/PageHeader'
 import SessionDrawer, { GradePill, Stars, type AIScore } from '../components/SessionDrawer'
 import SyncModal, { SyncProgressLine, useSyncStatus } from '../components/SyncModal'
 import BatchScoreModal, { BatchProgress, useBatchJob } from '../components/BatchScore'
+import { IssueDrawer, StatusPill } from './IssuesPage'
 import { channelName, fmtDuration, GRADES, scoreColor } from '../constants'
 import { copyText, fmtTime } from '../utils'
 
@@ -29,6 +30,10 @@ export interface SessionItem {
   aiTotal: number | null
   aiGrade: string
   aiReviewed: boolean
+  /** 对公群（source = 'wg'）：AI 整理的群问题 */
+  issueId?: number
+  issueStatus?: string
+  issueSummary?: string
 }
 
 interface ListResp {
@@ -83,6 +88,9 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
   const [loading, setLoading] = useState(false)
   const [filters, setFilters] = useState<Filters>({ members: [], channels: [] })
   const [detail, setDetail] = useState<SessionItem | null>(null)
+  const [issueId, setIssueId] = useState<number | null>(null)
+  /** 点行：在线咨询看聊天记录和评分；对公群看 AI 整理的问题和聊天记录 */
+  const open = useCallback((r: SessionItem) => { if (r.source === 'wg') setIssueId(r.issueId || null); else setDetail(r) }, [])
   const [syncOpen, setSyncOpen] = useState(false)
   const [batchOpen, setBatchOpen] = useState(false)
   const [scoringIds, setScoringIds] = useState<Set<string>>(new Set())
@@ -175,7 +183,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
   const columns = useMemo(() => [
     {
       title: '客户', dataIndex: 'customerName', width: 360,
-      render: (v: string) => (
+      render: (v: string, r: SessionItem) => (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
           <span className="avatar-dot">{(v || '?').charAt(0)}</span>
           <span
@@ -186,6 +194,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
           >
             {v || '—'}
           </span>
+          {r.source === 'wg' && r.issueSummary && <div className="kpi-cell-sub" style={{ whiteSpace: 'normal' }}>{r.issueSummary}</div>}
         </div>
       )
     },
@@ -198,7 +207,12 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
         </span>
       )
     },
-    { title: '渠道', dataIndex: 'channel', width: 96, render: (v: number) => <span className="pill-tag muted">{channelName(v)}</span> },
+    {
+      title: '渠道', dataIndex: 'channel', width: 110,
+      render: (v: number, r: SessionItem) => r.source === 'wg'
+        ? <Tooltip content="对公群里的一个客户问题：AI 把群聊按问题整理好，看谁实际处理的、解决没有（群聊停下 30 分钟后整理，今天的还可能变）。"><span><span className="pill-tag muted">企微群</span><div className="kpi-cell-sub">AI 整理</div></span></Tooltip>
+        : <span className="pill-tag muted">{channelName(v)}</span>
+    },
     {
       title: '会话时间', dataIndex: 'startTime', width: 130,
       render: (t: number, r: SessionItem) => (
@@ -212,6 +226,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
     {
       title: 'AI 质检', key: 'ai', width: 150,
       render: (_: unknown, r: SessionItem) => {
+        if (r.source === 'wg') return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><StatusPill s={r.issueStatus || 'unknown'} /></span>
         if (scoringIds.has(r.sessionId)) return <span className="form-hint" style={{ margin: 0 }}><Spin size="small" /> 评分中</span>
         if (r.scoreStatus === 'ok' && r.aiTotal != null) {
           return (
@@ -229,8 +244,8 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
       title: '', key: 'op', align: 'right' as const,
       render: (_: unknown, r: SessionItem) => (
         <span style={{ display: 'inline-flex', gap: 4 }} onClick={(e) => e.stopPropagation()}>
-          <Button size="small" theme="borderless" onClick={() => setDetail(r)}>查看</Button>
-          {r.customerMsgCount > 0 && (
+          <Button size="small" theme="borderless" onClick={() => open(r)}>查看</Button>
+          {r.source !== 'wg' && r.customerMsgCount > 0 && (
             <Tooltip content={r.scoreStatus === 'ok' ? '重新评分' : 'AI 评分'}>
               <Button size="small" theme="borderless" disabled={scoringIds.has(r.sessionId)} onClick={() => void scoreRow(r)}>
                 {r.scoreStatus === 'ok' ? '重评' : '评分'}
@@ -240,7 +255,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
         </span>
       )
     }
-  ], [scoringIds, scoreRow])
+  ], [scoringIds, scoreRow, open])
 
   if (!dept) return null
   const last = status?.lastSuccess
@@ -251,7 +266,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
     <div className={embedded ? 'stack' : 'page'}>
       {!embedded && <PageHeader
         title="会话记录"
-        desc={dept.groupChat ? '在线咨询（SaleSmartly）和对公群的会话、聊天记录和 AI 质检评分。' : '查看 SaleSmartly 会话、聊天记录和 AI 质检评分，按客服、时间、满意度筛选。'}
+        desc={dept.groupChat ? '在线咨询（SaleSmartly）的会话和 AI 质检评分；对公群按 AI 整理出的客户问题列出，挂在处理人名下。' : '查看 SaleSmartly 会话、聊天记录和 AI 质检评分，按客服、时间、满意度筛选。'}
         scope={dept.name}
         scopeHint="只显示本部门客服接待的会话 · 按会话开始时间筛选 · 北京时间"
         extra={
@@ -348,7 +363,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
           columns={columns}
           dataSource={data?.list || []}
           loading={loading}
-          onRow={(r?: SessionItem) => ({ onClick: () => r && setDetail(r), style: { cursor: 'pointer' } })}
+          onRow={(r?: SessionItem) => ({ onClick: () => r && open(r), style: { cursor: 'pointer' } })}
           empty={status && !status.lastSuccess ? '还没有同步过数据。平台启动 1 分钟后会自动同步本月的会话，也可以点右上角「同步数据」。' : '这个条件下没有会话'}
           pagination={{
             currentPage: page,
@@ -364,6 +379,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
       </div>
 
       <SessionDrawer deptCode={dept.code} session={detail} onClose={() => setDetail(null)} onScoreChange={applyScore} />
+      {dept.groupChat && <IssueDrawer deptCode={dept.code} id={issueId} onClose={() => setIssueId(null)} onChanged={() => void load()} />}
       <SyncModal deptCode={dept.code} visible={syncOpen} status={status} onClose={() => setSyncOpen(false)} onStarted={reloadStatus} />
       <BatchScoreModal
         deptCode={dept.code}

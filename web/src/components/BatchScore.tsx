@@ -23,6 +23,7 @@ interface Preview {
   scored: number
   noCustomer: number
   notAssessed: number
+  groupSkipped: number
   avgTokens: number
   model: string
   aiConfigured: boolean
@@ -147,6 +148,7 @@ const BatchScoreModal: React.FC<{
             <div><em>{preview.noCustomer}</em><span>客户没说话，跳过</span></div>
             <div><em>{preview.notAssessed}</em><span>客服不参与考核，跳过</span></div>
           </div>
+          {preview.groupSkipped > 0 && <div className="form-hint" style={{ margin: 0 }}>另有对公群问题 {preview.groupSkipped} 个不评分：对公群看 AI 整理的结论（已解决 / 未解决），绩效的 AI 质量只算在线咨询。</div>}
           {!preview.aiConfigured && <div className="notice error">本部门还没有配好 AI 接口，先到「设置 → 数据源与 AI」填好。</div>}
           {tooMany && <div className="notice error">一次最多评 {preview.max} 个，请缩小日期范围或加筛选条件。</div>}
           <div className="notice">

@@ -70,11 +70,12 @@ export async function getScore(projectId: string, sessionId: string): Promise<Sc
  * 失败时：以前评成功过的保留旧分数；从没评成功过的记一条 failed。
  */
 export async function scoreOne(dept: Department, projectId: string, sessionId: string, by: string): Promise<ScoreRow> {
-  const [s] = await query<{ start_time: number; end_time: number; assign_time: number; star_score: number; msgs_synced: number }>(
-    `SELECT s.start_time, s.end_time, s.assign_time, s.star_score, s.msgs_synced ${SESSION_FROM} AND s.session_id = ?`,
+  const [s] = await query<{ source: string; start_time: number; end_time: number; assign_time: number; star_score: number; msgs_synced: number }>(
+    `SELECT s.source, s.start_time, s.end_time, s.assign_time, s.star_score, s.msgs_synced ${SESSION_FROM} AND s.session_id = ?`,
     [dept.id, projectId, sessionId]
   )
   if (!s) throw new Error('会话不存在，或不是本部门客服接待的')
+  if (s.source !== 'ss') throw new Error('对公群问题不做质检评分，看 AI 整理的结论（已解决 / 未解决）')
 
   try {
     const ssCfg = await getDeptSetting(dept.code, 'salesmartly')

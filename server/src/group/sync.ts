@@ -1,6 +1,7 @@
 /**
  * 对公群同步（从桌面版 wecom-group-sync-service 搬过来）：
- * 按时间段从群聊归档服务拉群消息 → 群筛选 → 按间隔切段 → 按「谁实际回复了」拆成群会话 → 存进 ss_sessions（source = 'wg'，渠道 -2）。
+ * 按时间段从群聊归档服务拉群消息 → 群筛选 → 按间隔切段 → 按「谁实际回复了」拆成群会话 → 存进 ss_sessions（source = 'wgr'，渠道 -2）。
+ * 规则切的群会话只给技术支持部第二项计分，不在会话记录里出现；会话记录里的对公群是 AI 整理的群问题（issues/sessions.ts）。
  *
  * 口径（和桌面版一致）：
  * - 切段：同群相邻消息间隔 > 切段间隔（默认 30 分钟）断段；单段最长 24 小时；最后一条离现在不到切段间隔的段还没聊完，这次不存
@@ -10,6 +11,7 @@
  * - 员工 → 成员挂靠：群昵称去掉部门前缀后同名优先，再包含匹配（取最长）；分不清就不挂，列进提醒；手动指定的不覆盖
  * - 会话 ID = wg_{群}_{第一条消息 ID}；群聊没有满意度
  */
+import { createHash } from 'crypto'
 import { execute, now, query, transaction } from '../db'
 import { listDepartments, type Department } from '../auth'
 import { getDeptSetting, isSectionConfigured } from '../settings'
@@ -21,6 +23,7 @@ import {
 import { describeFetchError } from '../services/salesmartly'
 import { getGroupConfig } from './config'
 import { autoAnalyze } from '../issues/analyze'
+import { refreshIssueSessions } from '../issues/sessions'
 
 export const WG_CHANNEL = -2
 const ID_PREFIX = 'wg_'
@@ -198,19 +201,23 @@ async function saveThread(projectId: string, roomId: string, roomName: string, o
     msgType: toMsgType(m.msg_type),
     sendTime: m.send_time
   }))
+  // 内容没变（同一个人、同样的消息）就不重写，避免每 10 分钟把最近两天的群会话删了重写
+  const sig = createHash('sha256').update(JSON.stringify([ownerId, roomName, rows])).digest('hex')
+  const [old] = await query<{ content_sig: string }>('SELECT content_sig FROM ss_sessions WHERE project_id = ? AND session_id = ?', [projectId, sessionId])
+  if (old?.content_sig === sig) return sessionId
   const firstCustomer = msgs.find((m) => m.is_staff !== 1 && m.is_self !== 1)
   const userCnt = rows.filter((r) => r.senderType === 'customer').length
   const staffCnt = rows.filter((r) => r.senderType === 'staff').length
   const t = now()
   await transaction(async (conn) => {
     await conn.query(
-      `INSERT INTO ss_sessions (project_id, session_id, source, room_id, chat_user_id, customer_name, sys_user_id, channel, channel_id,
+      `INSERT INTO ss_sessions (project_id, session_id, source, room_id, content_sig, chat_user_id, customer_name, sys_user_id, channel, channel_id,
          start_time, end_time, assign_time, star_score, quality_score, tags, msg_count, user_msg_count, kf_msg_count, msgs_synced, msg_fail, synced_at)
-       VALUES (?, ?, 'wg', ?, '', ?, ?, ?, 0, ?, ?, ?, 0, 0, '', ?, ?, ?, 1, 0, ?)
-       ON DUPLICATE KEY UPDATE customer_name = VALUES(customer_name), sys_user_id = VALUES(sys_user_id), start_time = VALUES(start_time),
+       VALUES (?, ?, 'wgr', ?, ?, '', ?, ?, ?, 0, ?, ?, ?, 0, 0, '', ?, ?, ?, 1, 0, ?)
+       ON DUPLICATE KEY UPDATE content_sig = VALUES(content_sig), customer_name = VALUES(customer_name), sys_user_id = VALUES(sys_user_id), start_time = VALUES(start_time),
          end_time = VALUES(end_time), assign_time = VALUES(assign_time), msg_count = VALUES(msg_count), user_msg_count = VALUES(user_msg_count),
          kf_msg_count = VALUES(kf_msg_count), msgs_synced = 1, synced_at = VALUES(synced_at)`,
-      [projectId, sessionId, roomId.slice(0, 128), (roomName || roomId).slice(0, 255), ownerId, WG_CHANNEL,
+      [projectId, sessionId, roomId.slice(0, 128), sig, (roomName || roomId).slice(0, 255), ownerId, WG_CHANNEL,
         msgs[0].send_time, msgs[msgs.length - 1].send_time, firstCustomer?.send_time || msgs[0].send_time, rows.length, userCnt, staffCnt, t]
     )
     await conn.query('DELETE FROM ss_messages WHERE project_id = ? AND session_id = ?', [projectId, sessionId])
@@ -225,7 +232,7 @@ async function saveThread(projectId: string, roomId: string, roomName: string, o
 /** 删掉某个群在一段时间里、这次没有重新生成的旧群会话（拆分结果变了、接待人不再参与考核等） */
 async function dropStale(projectId: string, roomId: string, from: number, to: number, keep: Set<string>): Promise<number> {
   const rows = await query<{ session_id: string }>(
-    "SELECT session_id FROM ss_sessions WHERE project_id = ? AND source = 'wg' AND room_id = ? AND start_time BETWEEN ? AND ?",
+    "SELECT session_id FROM ss_sessions WHERE project_id = ? AND source = 'wgr' AND room_id = ? AND start_time BETWEEN ? AND ?",
     [projectId, roomId, from, to]
   )
   const stale = rows.map((r) => r.session_id).filter((id) => !keep.has(id))
@@ -400,6 +407,9 @@ async function doSync(dept: Department, projectId: string, begin: number, end: n
     progress.done++
   }
 
+  // 每 10 分钟一条同步记录，只留最近 14 天
+  await execute("DELETE FROM sync_runs WHERE source = 'wg' AND started_at < ?", [t - 14 * 86400]).catch(() => undefined)
+
   try {
     r.gaps = await fetchGaps(cfg, begin, Math.min(end, t))
   } catch { /* 拉不到中断区间不影响结果 */ }
@@ -442,7 +452,11 @@ export async function startGroupSync(dept: Department, begin: number, end: numbe
         [error ? 'failed' : 'success', now(), result?.sessions ?? 0, result?.sessions ?? 0, result?.messages ?? 0, error, JSON.stringify(result), progress.runId]
       ).catch((e) => console.error('[group] 写同步记录失败', e))
       running.delete(dept.code)
-      if (result) autoAnalyze().catch((e) => console.error('[issues] 自动分析出错', e))
+      if (result) {
+        // 员工挂靠可能变了：会话记录里的群问题对一遍；再看有没有聊完的群要分析（分析完也会对一遍）
+        refreshIssueSessions(dept).catch((e) => console.error('[issues] 群问题写进会话记录失败', e))
+        autoAnalyze().catch((e) => console.error('[issues] 自动分析出错', e))
+      }
       if (result) console.log(`[group] ${dept.name} 对公群同步结束：群 ${result.rooms} 个，群会话 ${result.sessions} 个，未聊完 ${result.skippedOpen}，没人接 ${result.skippedNoOwner}，清掉旧的 ${result.removed}`)
     }
   })()
