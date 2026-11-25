@@ -458,7 +458,12 @@ html, body, #root {
   flex-direction: column;
   gap: 20px;
   min-height: 100%;
+  /* 不能被外层（.app-main 是固定高度的 flex 列）压缩：内容超过一屏时由 .app-main 滚动，
+     否则 overflow:hidden 的卡片（表格）会被压扁截掉，分页条看不到 */
+  flex-shrink: 0;
 }
+
+.page > * { flex-shrink: 0; }
 
 .page-header {
   display: flex;
@@ -1176,3 +1181,6 @@ a.app-nav-item { text-decoration: none; }
 .rule-tiers { padding: 10px 0; border-bottom: 1px solid var(--app-border-1); max-width: 760px; }
 .rule-tiers-title { font-size: 13px; margin-bottom: 8px; }
 .rule-tier-row { display: flex; gap: 8px; align-items: center; margin-bottom: 6px; }
+
+/* 表格分页条左右留白（左侧「显示第 x 条」别贴边） */
+.panel .semi-table-pagination-outer { padding: 0 20px; }
