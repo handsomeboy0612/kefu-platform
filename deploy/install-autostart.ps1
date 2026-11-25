@@ -1,4 +1,5 @@
 ﻿# 部署平台（在 DESKTOP-81HRUPD 上运行一次，需要管理员权限，会自动弹窗提权）：
+#   0. 数据库 MySQL（3307）设为开机自启（平台和群聊归档服务共用）
 #   1. 平台设为开机自启：系统账户运行，不用登录 Windows；由 run-server.ps1 守护，崩溃后 5 秒自动重启
 #   2. 防火墙放行 8092 端口（其他电脑访问 http://DESKTOP-81HRUPD:8092）
 #   3. 每天 03:40 运行 backup.ps1 备份 kefu_platform 库，保留 14 天
@@ -31,6 +32,24 @@ try {
     Start-Sleep -Seconds 2
 
     $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+
+    # 数据库（3307，数据在 D:\work\localrun\mysql\data）：平台和群聊归档服务都用它。
+    # 它原来是命令行手动启动的，重启电脑不会自己起来；这里注册成开机自启，参数和现在完全一样。
+    # 现在已经在跑的就不动它，下次开机才由计划任务启动。
+    $mysqld    = 'C:\Program Files\PhpWebStudy-Data\env\mysql\bin\mysqld.exe'
+    $mysqlLog  = Join-Path $dir 'logs\mysql-3307.log'
+    New-Item -ItemType Directory -Force -Path (Join-Path $dir 'logs') | Out-Null
+    $mysqlArgs = "/c `"`"$mysqld`" --no-defaults --datadir=D:/work/localrun/mysql/data --port=3307 --bind-address=127.0.0.1 --mysqlx=OFF --character-set-server=utf8mb4 --console >> `"$mysqlLog`" 2>&1`""
+    $mysqlSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
+        -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -MultipleInstances IgnoreNew `
+        -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    Register-ScheduledTask -TaskName 'kefu-mysql-3307' -Force -Principal $principal -Settings $mysqlSettings `
+        -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument $mysqlArgs -WorkingDirectory $dir) `
+        -Trigger (New-ScheduledTaskTrigger -AtStartup) | Out-Null
+    if (-not (Get-NetTCPConnection -LocalPort 3307 -State Listen -ErrorAction SilentlyContinue)) {
+        Start-ScheduledTask -TaskName 'kefu-mysql-3307'
+        Start-Sleep -Seconds 5
+    }
 
     # ExecutionTimeLimit = 0：不限运行时长；守护脚本自己也挂了的话，计划任务 1 分钟后重新拉起
     $serverSettings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) `
@@ -65,6 +84,7 @@ try {
     if ($ok) {
         Write-Host "完成：平台已设为开机自启并启动，其他电脑访问 http://$($env:COMPUTERNAME):$port" -ForegroundColor Green
         Write-Host '每天 03:40 自动备份 kefu_platform 库到 backup 目录（保留 14 天）。'
+        Write-Host '数据库 MySQL（3307）已设为开机自启，重启电脑后会自动起来。'
     } else {
         Write-Host "计划任务已注册，但 60 秒内平台没有响应，请看日志：$(Join-Path $dir 'logs')" -ForegroundColor Yellow
     }

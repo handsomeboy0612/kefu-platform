@@ -88,7 +88,8 @@ async function main(): Promise<void> {
   await startScheduler()
   // 每晚 01:00 自动评前一天的会话（部门在「设置 → AI 质检」里打开才会评）
   startNightlyScheduler()
-  app.log.info(`客服考核数据平台已启动：http://127.0.0.1:${config.port}${hasWeb ? '' : '（未找到网页打包产物，只提供接口）'}`)
+  // 用 console.log：正式部署时日志级别是 warn，启动信息也要能在 logs\server.log 里看到
+  console.log(`${new Date().toLocaleString('zh-CN')} 客服考核数据平台已启动：http://127.0.0.1:${config.port}${hasWeb ? '' : '（未找到网页打包产物，只提供接口）'}`)
 }
 
 main().catch((err) => {
