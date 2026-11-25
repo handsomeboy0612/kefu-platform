@@ -150,7 +150,7 @@ const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClose: () =
 const IssuesPage: React.FC = () => {
   const { dept } = useAuth()
   const t = new Date()
-  const [range, setRange] = useState<[Date, Date]>([new Date(t.getFullYear(), t.getMonth(), 1), new Date(t.getFullYear(), t.getMonth(), t.getDate() - 1)])
+  const [range, setRange] = useState<[Date, Date]>([new Date(t.getFullYear(), t.getMonth(), 1), t])
   const [handler, setHandler] = useState('')
   const [status, setStatus] = useState('')
   const [review, setReview] = useState('')
@@ -237,7 +237,7 @@ const IssuesPage: React.FC = () => {
         title="群问题"
         desc="AI 把对公群的聊天按「客户问题」整理出来：谁实际处理的、解决没有、依据哪句原话。首响、处理时效由程序按消息时间算。"
         scope={dept.name}
-        scopeHint="试运行：只展示、不进绩效 · 每次对公群同步后自动分析最近 3 天（只分析已经过完的天）"
+        scopeHint="试运行：只展示、不进绩效 · 每 10 分钟同步群消息，一个群聊天停下 30 分钟就自动分析（当天也分析）"
         extra={
           <>
             {data?.analysis.progress
@@ -295,7 +295,7 @@ const IssuesPage: React.FC = () => {
       <div className="panel" style={{ padding: 0, overflow: 'hidden', opacity: loading ? 0.6 : 1 }}>
         <Table rowKey="id" columns={columns} dataSource={data?.list || []} loading={!data}
           onRow={(r?: Issue) => ({ onClick: () => r && setOpenId(r.id), style: { cursor: 'pointer' } })}
-          empty={data?.analysis.ok ? '这个条件下没有问题' : '还没有分析结果。对公群同步后会自动分析，也可以点右上角「重新分析」。'}
+          empty={data?.analysis.ok ? '这个条件下没有问题' : '还没有分析结果。群消息每 10 分钟同步，聊完的群会自动分析，也可以点右上角「重新分析」。'}
           pagination={{ currentPage: page, pageSize: 20, total: data?.total || 0, onPageChange: setPage, style: { padding: '12px 20px' } }} />
       </div>
 
@@ -306,8 +306,8 @@ const IssuesPage: React.FC = () => {
       <IssueDrawer deptCode={dept.code} id={openId} onClose={() => setOpenId(null)} onChanged={() => void load()} />
       <Modal title="重新分析" visible={reOpen} onCancel={() => setReOpen(false)} onOk={() => void reanalyze()} okText="开始">
         <div className="stack" style={{ gap: 12, paddingBottom: 8 }}>
-          <div className="notice" style={{ marginTop: 0 }}>平时对公群每次同步后会自动分析最近 3 天，输入没变的直接用上次结果，不重复花钱。改了员工挂靠、群筛选后可以在这里重跑。</div>
-          <DatePicker type="dateRange" value={reRange ?? undefined} style={{ width: 280 }} disabledDate={(d) => !!d && d.getTime() > Date.now() - 86400000}
+          <div className="notice" style={{ marginTop: 0 }}>平时每 10 分钟同步一次群消息，聊完的群自动分析，没有新消息的直接用上次结果，不重复花钱。改了员工挂靠、群筛选后可以在这里重跑。</div>
+          <DatePicker type="dateRange" value={reRange ?? undefined} style={{ width: 280 }} disabledDate={(d) => !!d && d.getTime() > Date.now()}
             onChange={(v) => setReRange(Array.isArray(v) && v[0] && v[1] ? [v[0] as Date, v[1] as Date] : null)} />
           <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
             <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />

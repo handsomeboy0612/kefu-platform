@@ -27,8 +27,9 @@ const ID_PREFIX = 'wg_'
 const SEGMENT_MAX_SEC = 24 * 3600
 /** 往前多拉一天：切段时能看到段的真正开头，只存开头落在同步时段里的段（之前的段上一轮已经存过） */
 const PAD_SEC = 86400
-const AUTO_LOOKBACK_SEC = 3 * 86400
-const AUTO_INTERVAL_MS = 60 * 60 * 1000
+// 每 10 分钟同步最近 2 天（群消息在本机归档服务里，拉一次一秒左右），几乎等于实时
+const AUTO_LOOKBACK_SEC = 2 * 86400
+const AUTO_INTERVAL_MS = 10 * 60 * 1000
 
 const normName = (s: string): string => (s || '').replace(/\s+/g, '').toLowerCase()
 /** 去部门前缀：「技术支持部-张三」→「张三」（兼容全角 / 长横线） */
@@ -471,9 +472,9 @@ async function autoOnce(): Promise<void> {
   }
 }
 
-/** 每小时同步一次对公群（启动 3 分钟后第一轮，错开 SaleSmartly 同步） */
+/** 每 10 分钟同步一次对公群（启动 2 分钟后第一轮），同步完自动分析 */
 export function startGroupScheduler(): void {
   const tick = (): void => { autoOnce().catch((e) => console.error('[group] 自动同步出错', e)) }
-  setTimeout(tick, 3 * 60 * 1000)
+  setTimeout(tick, 2 * 60 * 1000)
   setInterval(tick, AUTO_INTERVAL_MS)
 }

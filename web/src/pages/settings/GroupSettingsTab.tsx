@@ -253,7 +253,7 @@ const GroupSettingsTab: React.FC = () => {
           <Button onClick={() => setSyncOpen(true)} disabled={!!status?.progress}>立即同步</Button>
         </div>
         <div className="panel-desc" style={{ marginBottom: 0 }}>
-          群消息来自企业微信机器人，每小时自动同步最近 3 天，按间隔切成「群会话」挂到人名下，在「会话记录」里按来源「对公群」查看。
+          群消息来自企业微信机器人，每 10 分钟自动同步，按间隔切成「群会话」挂到人名下（在「会话记录」里按来源「对公群」查看），聊完的群由 AI 整理成「群问题」。
           {status && <> 已有群会话 {status.sessionTotal} 个；最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}；</>}
           {a?.configured === false ? '还没配群聊归档服务。' : a?.ok === false ? `归档服务连不上：${a.error}` : (a?.agents || []).map((g) => `采集端 ${g.name}${g.online ? '在线' : '离线'}`).join('、')}
           {status?.progress && <span className="pill-tag" style={{ marginLeft: 8 }}>正在同步 · {PHASE[status.progress.phase] || ''}{status.progress.total ? ` ${status.progress.done}/${status.progress.total}` : ''}</span>}
@@ -273,7 +273,7 @@ const GroupSettingsTab: React.FC = () => {
 
       <Modal title="同步对公群" visible={syncOpen} onCancel={() => setSyncOpen(false)} onOk={() => void start()} okText="开始同步" confirmLoading={starting}>
         <div className="stack" style={{ gap: 12, paddingBottom: 8 }}>
-          <div className="notice" style={{ marginTop: 0 }}>平时每小时会自动同步最近 3 天，不用手动点。改了员工挂靠或群筛选，想马上看效果，就选时间段重新同步（会按新设置重新切段、挂人）。</div>
+          <div className="notice" style={{ marginTop: 0 }}>平时每 10 分钟会自动同步，不用手动点。改了员工挂靠或群筛选，想马上看效果，就选时间段重新同步（会按新设置重新切段、挂人）。</div>
           <DatePicker type="dateRange" value={range ?? undefined} style={{ width: 280 }}
             disabledDate={(d) => !!d && d.getTime() > Date.now()}
             onChange={(v) => setRange(Array.isArray(v) && v[0] && v[1] ? [v[0] as Date, v[1] as Date] : null)} />

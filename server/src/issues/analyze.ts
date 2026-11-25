@@ -1,7 +1,8 @@
 /**
  * 对公群 AI 分问题（方案见 docs/ai-issue-plan.md）。
  *
- * 处理单位：一个群一天（北京时间），只处理当天客户和员工都说过话的群，只处理已经过完的天（今天的明天再分析）。
+ * 处理单位：一个群一天（北京时间），只处理当天客户和员工都说过话的群。
+ * 当天也分析：一个群聊天停下超过切段间隔（默认 30 分钟）才分析，之后又有新消息、再停下来就重新分析；正在聊的先不动。
  * AI 判断：哪些消息是同一个问题、谁实际处理、解决没有（引用原话）。程序负责：校验、算时间、谁算数。
  * 稳定：一个群一天的输入（这天的消息 + 之前各天的结果 + 提示词版本 + 模型）没变就不重调 AI；
  *       某天要重跑时，先把这天及以后各天的改动按倒序撤回，再从这天往后重放（输入没变的直接用缓存结果）。
@@ -14,6 +15,7 @@ import { getDeptSetting, isSectionConfigured, type AISettings } from '../setting
 import { AIConfigError, callAI, RetryableError } from '../ai/score'
 import { ISSUE_PROMPT, PROMPT_VERSION } from './prompt'
 import { fetchGroups } from '../services/archive'
+import { getGroupConfig } from '../group/config'
 
 const CARRY_DAYS = 3
 const ROOM_CONCURRENCY = 3
@@ -336,7 +338,7 @@ const running = new Map<string, AnalyzeProgress>()
 export const analyzeProgress = (deptCode: string): AnalyzeProgress | null => running.get(deptCode) ?? null
 
 /** 分析一个群从 from 到 to 的每一天（按天顺序，带缓存和回滚） */
-async function analyzeRoom(dept: Department, ai: AISettings, roomId: string, roomName: string, from: string, to: string, force: boolean, p: AnalyzeProgress): Promise<void> {
+async function analyzeRoom(dept: Department, ai: AISettings, roomId: string, roomName: string, from: string, to: string, force: boolean, quietSec: number, p: AnalyzeProgress): Promise<void> {
   const [before] = await query<{ chain_hash: string; out_hash: string }>(
     'SELECT chain_hash, out_hash FROM wg_issue_runs WHERE department_id = ? AND room_id = ? AND day < ? AND applied = 1 ORDER BY day DESC LIMIT 1',
     [dept.id, roomId, from]
@@ -350,6 +352,9 @@ async function analyzeRoom(dept: Department, ai: AISettings, roomId: string, roo
       'SELECT chain_hash, out_hash, status, output, applied, attempts FROM wg_issue_runs WHERE department_id = ? AND room_id = ? AND day = ?',
       [dept.id, roomId, day]
     )
+    // 还在聊（最后一条离现在不到切段间隔）：这天先不分析，后面的天也不动（按天顺序），等聊完再说
+    const lastAt = msgs.length ? Number(msgs[msgs.length - 1].send_time) : 0
+    if (lastAt && now() - lastAt < quietSec) break
     const hasCustomer = msgs.some(isCustomer)
     const hasStaff = msgs.some((m) => m.is_staff && !m.is_self)
     if (!hasCustomer || !hasStaff) {
@@ -428,9 +433,10 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
   if (running.has(dept.code)) throw new AnalyzeBusyError('正在分析，等这次跑完再试')
   const ai = await getDeptSetting(dept.code, 'ai')
   if (!isSectionConfigured('ai', ai)) throw new Error('本部门还没有配好 AI 接口')
-  const yesterday = addDays(dayOf(now()), -1)
-  if (to > yesterday) to = yesterday
-  if (from > to) throw new Error('只分析已经过完的天（今天的明天再分析）')
+  const today = dayOf(now())
+  if (to > today) to = today
+  if (from > to) throw new Error('日期不对（不能分析还没到的天）')
+  const quietSec = (await getGroupConfig(dept)).gapMin * 60
   // 选中的群：同步时存过消息的群（room_name 取群会话里的名字，没有就用 ID）
   const rooms = await query<{ room_id: string }>(
     'SELECT DISTINCT room_id FROM wg_messages WHERE send_time >= ? AND send_time < ?', [dayStart(from) - CARRY_DAYS * 86400, dayStart(to) + 86400]
@@ -451,7 +457,7 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
         while (queue.length) {
           const roomId = queue.shift()!
           try {
-            await analyzeRoom(dept, ai, roomId, names.get(roomId) || '', from, to, force, p)
+            await analyzeRoom(dept, ai, roomId, names.get(roomId) || '', from, to, force, quietSec, p)
           } catch (err) {
             if (err instanceof AIConfigError) { queue.length = 0; console.error(`[issues] AI 配置问题，停止分析：${err.message}`); break }
             console.error(`[issues] 群 ${roomId} 分析出错：${(err as Error).message}`)
@@ -470,7 +476,7 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
   return p
 }
 
-/** 自动：分析最近 3 天（已经过完的）；第一次从有群消息的第一天开始。对公群同步成功后调用 */
+/** 自动：分析最近 3 天（含今天，聊完的群才分析）；第一次从有群消息的第一天开始。对公群每次同步成功后调用 */
 export async function autoAnalyze(): Promise<void> {
   for (const dept of await listDepartments()) {
     if (!dept.groupChat || running.has(dept.code)) continue
@@ -478,10 +484,10 @@ export async function autoAnalyze(): Promise<void> {
     const [any] = await query<{ n: number }>('SELECT COUNT(*) n FROM wg_issue_runs WHERE department_id = ?', [dept.id])
     const [first] = await query<{ t: number | null }>('SELECT MIN(send_time) t FROM wg_messages')
     if (!first?.t) continue
-    const yesterday = addDays(dayOf(now()), -1)
-    const from = Number(any?.n) > 0 ? addDays(yesterday, -2) : dayOf(Number(first.t))
+    const today = dayOf(now())
+    const from = Number(any?.n) > 0 ? addDays(today, -2) : dayOf(Number(first.t))
     try {
-      await startAnalyze(dept, from, yesterday, 'auto')
+      await startAnalyze(dept, from, today, 'auto')
     } catch (err) {
       console.error(`[issues] ${dept.name} 自动分析没能开始：${(err as Error).message}`)
     }
