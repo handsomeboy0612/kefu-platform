@@ -61,6 +61,8 @@ async function main(): Promise<void> {
   if (hasWeb) {
     // wildcard：每次请求都去磁盘找文件，重新打包网页后不用重启服务；找不到的路径交给下面的 notFound（回 index.html）
     await app.register(fastifyStatic, { root: config.webDir, prefix: '/', wildcard: true, index: false })
+    // 根路径是目录，index:false 时静态插件会回 403，这里直接给首页
+    app.get('/', (_req, reply) => reply.type('text/html').sendFile('index.html'))
   }
   app.setNotFoundHandler((req, reply) => {
     if (req.url.startsWith('/api/') || !hasWeb) {
