@@ -1184,3 +1184,7 @@ a.app-nav-item { text-decoration: none; }
 
 /* 表格分页条左右留白（左侧「显示第 x 条」别贴边） */
 .panel .semi-table-pagination-outer { padding: 0 20px; }
+
+/* ─── 群问题 ───────────────────────────────────── */
+.judge-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
+.issue-edit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--app-border-1); padding-top: 12px; }

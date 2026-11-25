@@ -236,6 +236,85 @@ const SCHEMA: string[] = [
     updated_at   BIGINT       NOT NULL DEFAULT 0
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
+  // 对公群原始消息（选中的群，同步时整批存下来），AI 分问题按消息编号引用
+  `CREATE TABLE IF NOT EXISTS wg_messages (
+    msg_id       VARCHAR(128) NOT NULL PRIMARY KEY,
+    room_id      VARCHAR(128) NOT NULL,
+    sender_id    VARCHAR(128) NOT NULL DEFAULT '',
+    sender_name  VARCHAR(128) NOT NULL DEFAULT '',
+    is_staff     TINYINT      NOT NULL DEFAULT 0,
+    is_self      TINYINT      NOT NULL DEFAULT 0,
+    msg_type     INT          NOT NULL DEFAULT 0,
+    content      MEDIUMTEXT   NOT NULL,
+    at_list      JSON         NULL,
+    refer_id     VARCHAR(128) NOT NULL DEFAULT '',
+    send_time    BIGINT       NOT NULL,
+    KEY idx_room_time (room_id, send_time)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  // AI 识别出的对公群问题（一个问题可以跨天，算在开始那天）
+  `CREATE TABLE IF NOT EXISTS wg_issues (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    department_id   INT UNSIGNED NOT NULL,
+    room_id         VARCHAR(128) NOT NULL,
+    room_name       VARCHAR(255) NOT NULL DEFAULT '',
+    day             CHAR(10)     NOT NULL,             -- 问题开始那天（北京时间）
+    updated_day     CHAR(10)     NOT NULL,             -- 最后一次被哪天的分析改过
+    anchor_msg_id   VARCHAR(128) NOT NULL,             -- 问题的第一条消息（核对 / 修改按它对应，重跑后也能找回）
+    summary         TEXT         NOT NULL,
+    customer_ids    JSON         NOT NULL,
+    message_ids     JSON         NOT NULL,
+    handler_user_id VARCHAR(128) NOT NULL DEFAULT '',  -- 企微 user_id；空 = 没人处理
+    handler_reason  TEXT         NULL,
+    helper_ids      JSON         NULL,
+    status          VARCHAR(12)  NOT NULL,             -- resolved / unresolved / unknown
+    resolved_msg_id VARCHAR(128) NOT NULL DEFAULT '',
+    evidence        TEXT         NULL,
+    first_customer_at BIGINT     NOT NULL DEFAULT 0,
+    first_reply_at  BIGINT       NOT NULL DEFAULT 0,   -- 处理人第一次回应（含「稍等」）
+    resolved_at     BIGINT       NOT NULL DEFAULT 0,
+    created_at      BIGINT       NOT NULL,
+    KEY idx_dept_day (department_id, day),
+    KEY idx_room_day (room_id, day)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  // 每个群每天的 AI 分析记录：缓存（输入没变不重调 AI）+ 回滚信息（重跑时撤回这一天的改动）
+  `CREATE TABLE IF NOT EXISTS wg_issue_runs (
+    department_id  INT UNSIGNED NOT NULL,
+    room_id        VARCHAR(128) NOT NULL,
+    day            CHAR(10)     NOT NULL,
+    chain_hash     CHAR(64)     NOT NULL,     -- 这天的消息 + 之前各天的结果 + 提示词版本 + 模型
+    out_hash       CHAR(64)     NOT NULL DEFAULT '',
+    status         VARCHAR(8)   NOT NULL,     -- ok / failed
+    error          TEXT         NULL,
+    output         JSON         NULL,         -- 校验通过的 AI 输出
+    applied        TINYINT      NOT NULL DEFAULT 0,
+    created_issue_ids JSON      NULL,
+    prev_states    JSON         NULL,         -- 这天改过的旧问题改之前的样子
+    model          VARCHAR(64)  NOT NULL DEFAULT '',
+    tokens_in      INT          NOT NULL DEFAULT 0,
+    tokens_out     INT          NOT NULL DEFAULT 0,
+    attempts       INT          NOT NULL DEFAULT 0,
+    updated_at     BIGINT       NOT NULL,
+    PRIMARY KEY (department_id, room_id, day)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
+  // 主管对问题的核对和修改（按群 + 问题第一条消息对应，AI 重跑也不会丢）
+  `CREATE TABLE IF NOT EXISTS wg_issue_marks (
+    department_id    INT UNSIGNED NOT NULL,
+    room_id          VARCHAR(128) NOT NULL,
+    anchor_msg_id    VARCHAR(128) NOT NULL,
+    boundary_ok      TINYINT      NULL,      -- 问题边界对不对（1 对 / 0 不对 / NULL 没核对）
+    handler_ok       TINYINT      NULL,
+    status_ok        TINYINT      NULL,
+    note             TEXT         NULL,
+    override_handler VARCHAR(128) NULL,      -- 主管改的处理人（企微 user_id；空串 = 没人处理）
+    override_status  VARCHAR(12)  NULL,
+    updated_by       VARCHAR(64)  NOT NULL DEFAULT '',
+    updated_at       BIGINT       NOT NULL,
+    PRIMARY KEY (department_id, room_id, anchor_msg_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
   // 绩效考核的人工剔除：reply = 回复率扣分剔除（复核后认为不该扣），bad_review = 差评申诉剔除
   `CREATE TABLE IF NOT EXISTS kpi_exemptions (
     project_id  VARCHAR(64)  NOT NULL,

@@ -9,7 +9,7 @@ import SettingsPage from './pages/SettingsPage'
 import SessionsPage from './pages/SessionsPage'
 import DashboardPage from './pages/DashboardPage'
 import KpiPage from './pages/kpi/KpiPage'
-import GroupPage from './pages/GroupPage'
+import IssuesPage from './pages/IssuesPage'
 
 /** 一期还没做好的页面占位 */
 const Placeholder: React.FC<{ title: string; desc: string }> = ({ title, desc }) => {
@@ -30,7 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { path: '/sessions', text: '会话记录', desc: '查看 SaleSmartly 会话和 AI 质检评分，按客服、时间、评分筛选。' },
   { path: '/dashboard', text: '统计看板', desc: '按客服看接待量、首响时长和质检得分的变化。' },
   { path: '/kpi', text: '绩效考核', desc: '按本部门的考核规则，汇总每位客服的得分。' },
-  { path: '/group', text: '对公群', desc: '企业微信对公群里谁解决了什么问题、回复了多少次。', groupChatOnly: true },
+  { path: '/issues', text: '群问题', desc: 'AI 从对公群聊天里整理出的客户问题。', groupChatOnly: true },
   { path: '/settings', text: '设置', desc: '数据源、AI 接口、成员和考核规则。' }
 ]
 
@@ -39,7 +39,7 @@ const PAGES: Record<string, React.ReactNode> = {
   '/sessions': <SessionsPage />,
   '/dashboard': <DashboardPage />,
   '/kpi': <KpiPage />,
-  '/group': <GroupPage />,
+  '/issues': <IssuesPage />,
   '/settings': <SettingsPage />
 }
 

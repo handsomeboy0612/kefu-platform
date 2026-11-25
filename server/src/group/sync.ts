@@ -20,6 +20,7 @@ import {
 } from '../services/archive'
 import { describeFetchError } from '../services/salesmartly'
 import { getGroupConfig } from './config'
+import { autoAnalyze } from '../issues/analyze'
 
 export const WG_CHANNEL = -2
 const ID_PREFIX = 'wg_'
@@ -294,6 +295,20 @@ async function doSync(dept: Department, projectId: string, begin: number, end: n
     list.push(m)
   }
 
+  // ②-b 原始消息存一份（AI 分问题用）
+  const keep = [...byRoom.values()].flat()
+  for (let i = 0; i < keep.length; i += 500) {
+    const batch = keep.slice(i, i + 500)
+    await execute(
+      `INSERT INTO wg_messages (msg_id, room_id, sender_id, sender_name, is_staff, is_self, msg_type, content, at_list, refer_id, send_time)
+       VALUES ?
+       ON DUPLICATE KEY UPDATE sender_name = VALUES(sender_name), is_staff = VALUES(is_staff), content = VALUES(content),
+         at_list = VALUES(at_list), refer_id = VALUES(refer_id)`,
+      [batch.map((m) => [m.msg_id.slice(0, 128), m.room_id.slice(0, 128), (m.sender_id || '').slice(0, 128), (m.sender_name || '').slice(0, 128),
+        m.is_staff ? 1 : 0, m.is_self ? 1 : 0, m.msg_type || 0, m.content || '', JSON.stringify(m.at_list || []), (m.refer_id || '').slice(0, 128), m.send_time])]
+    )
+  }
+
   // ③ 员工挂靠：群昵称优先；手动指定的不覆盖
   const members = await query<{ sys_user_id: number; nickname: string; department_id: number | null; participate: number; active: number }>(
     'SELECT sys_user_id, nickname, department_id, participate, active FROM members WHERE project_id = ?', [projectId]
@@ -426,6 +441,7 @@ export async function startGroupSync(dept: Department, begin: number, end: numbe
         [error ? 'failed' : 'success', now(), result?.sessions ?? 0, result?.sessions ?? 0, result?.messages ?? 0, error, JSON.stringify(result), progress.runId]
       ).catch((e) => console.error('[group] 写同步记录失败', e))
       running.delete(dept.code)
+      if (result) autoAnalyze().catch((e) => console.error('[issues] 自动分析出错', e))
       if (result) console.log(`[group] ${dept.name} 对公群同步结束：群 ${result.rooms} 个，群会话 ${result.sessions} 个，未聊完 ${result.skippedOpen}，没人接 ${result.skippedNoOwner}，清掉旧的 ${result.removed}`)
     }
   })()

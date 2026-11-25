@@ -7,6 +7,7 @@ import AccountsTab from './settings/AccountsTab'
 import MembersTab from './settings/MembersTab'
 import QualityTab from './settings/QualityTab'
 import KpiRulesTab from './settings/KpiRulesTab'
+import GroupSettingsTab from './settings/GroupSettingsTab'
 
 const SettingsPage: React.FC = () => {
   const { user, dept } = useAuth()
@@ -28,6 +29,11 @@ const SettingsPage: React.FC = () => {
         <TabPane tab="成员" itemKey="members">
           <div style={{ paddingTop: 20 }}><MembersTab /></div>
         </TabPane>
+        {dept?.groupChat && (
+          <TabPane tab="对公群" itemKey="group">
+            <div style={{ paddingTop: 20 }}><GroupSettingsTab /></div>
+          </TabPane>
+        )}
         <TabPane tab="AI 质检" itemKey="quality">
           <div style={{ paddingTop: 20 }}><QualityTab /></div>
         </TabPane>

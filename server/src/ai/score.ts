@@ -254,12 +254,12 @@ ${dims}
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /** 可以重试的错误（限流、网关 5xx、网络、超时） */
-class RetryableError extends Error {}
+export class RetryableError extends Error {}
 
 /** 配置问题（Key 无效、没权限、模型不存在）：重试和继续评别的都没用，批量评分遇到就停 */
 export class AIConfigError extends Error {}
 
-async function callAI(ai: AISettings, body: unknown): Promise<{ content: string; model: string; tokensIn: number; tokensOut: number }> {
+export async function callAI(ai: AISettings, body: unknown): Promise<{ content: string; model: string; tokensIn: number; tokensOut: number }> {
   let res: Response
   try {
     res = await fetch(`${ai.apiBase}/chat/completions`, {

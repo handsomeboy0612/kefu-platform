@@ -1,11 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, DatePicker, Input, InputNumber, Modal, Radio, RadioGroup, Select, Spin, Table, TabPane, Tabs, Toast } from '@douyinfe/semi-ui'
 import { IconSearch } from '@douyinfe/semi-icons'
-import { api } from '../api'
-import { useAuth } from '../auth'
-import PageHeader from '../components/PageHeader'
-import SessionsPage from './SessionsPage'
-import { fmtTime } from '../utils'
+import { api } from '../../api'
+import { useAuth } from '../../auth'
+import { fmtTime } from '../../utils'
 
 interface GroupConfig { roomFilterMode: 'keyword' | 'manual'; roomKeyword: string; selectedRooms: string[]; gapMin: number }
 interface Run {
@@ -199,14 +197,14 @@ const RunsTab: React.FC<{ runs: Run[] }> = ({ runs }) => {
   )
 }
 
-const GroupPage: React.FC = () => {
+/** 设置 → 对公群：归档服务状态、立即同步、员工挂靠、群筛选与切段、同步记录（只有开了对公群的部门有） */
+const GroupSettingsTab: React.FC = () => {
   const { dept } = useAuth()
   const [status, setStatus] = useState<Status | null>(null)
-  const [tab, setTab] = useState('sessions')
+  const [tab, setTab] = useState('staff')
   const [syncOpen, setSyncOpen] = useState(false)
   const [range, setRange] = useState<[Date, Date] | null>(null)
   const [starting, setStarting] = useState(false)
-  const [listKey, setListKey] = useState(0)
   const wasRunning = useRef(false)
 
   const load = useCallback(() => {
@@ -214,7 +212,7 @@ const GroupPage: React.FC = () => {
     api<Status>('/api/group/status', { query: { dept: dept.code } })
       .then((s) => {
         setStatus(s)
-        if (wasRunning.current && !s.progress) { setListKey((k) => k + 1); Toast.success('对公群同步完成') }
+        if (wasRunning.current && !s.progress) Toast.success('对公群同步完成')
         wasRunning.current = !!s.progress
       })
       .catch((e) => Toast.error((e as Error).message))
@@ -248,42 +246,29 @@ const GroupPage: React.FC = () => {
   }
 
   return (
-    <div className="page">
-      <PageHeader
-        title="对公群"
-        desc="企业微信对公群里技术支持接了哪些问题、回复得快不快。群消息按间隔切成一段段「群会话」，按谁实际回复了挂到人名下。"
-        scope={dept.name}
-        scopeHint="群消息来自企业微信机器人 · 每小时自动同步最近 3 天 · 北京时间"
-        extra={
-          <>
-            {status?.progress
-              ? <span className="pill-tag">正在同步 · {PHASE[status.progress.phase] || ''}{status.progress.total ? ` ${status.progress.done}/${status.progress.total}` : ''}</span>
-              : <span className="pill-tag">{lastOk ? '已同步' : '未同步'}</span>}
-            <div>
-              <div>最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}</div>
-              <div>
-                {a?.configured === false ? '没配群聊归档服务' : a?.ok === false ? '归档服务连不上'
-                  : (a?.agents || []).map((g) => `${g.name}${g.online ? '在线' : '离线'}`).join('、') || '—'}
-              </div>
-            </div>
-            <Button onClick={() => setSyncOpen(true)} disabled={!!status?.progress}>立即同步</Button>
-          </>
-        }
-      />
-      {a?.ok === false && <div className="notice error">群聊归档服务连不上：{a.error}。到「设置 → 数据源与 AI」检查。</div>}
+    <div className="stack">
+      <div className="panel">
+        <div className="panel-head">
+          <div className="panel-title" style={{ margin: 0 }}>对公群同步</div>
+          <Button onClick={() => setSyncOpen(true)} disabled={!!status?.progress}>立即同步</Button>
+        </div>
+        <div className="panel-desc" style={{ marginBottom: 0 }}>
+          群消息来自企业微信机器人，每小时自动同步最近 3 天，按间隔切成「群会话」挂到人名下，在「会话记录」里按来源「对公群」查看。
+          {status && <> 已有群会话 {status.sessionTotal} 个；最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}；</>}
+          {a?.configured === false ? '还没配群聊归档服务。' : a?.ok === false ? `归档服务连不上：${a.error}` : (a?.agents || []).map((g) => `采集端 ${g.name}${g.online ? '在线' : '离线'}`).join('、')}
+          {status?.progress && <span className="pill-tag" style={{ marginLeft: 8 }}>正在同步 · {PHASE[status.progress.phase] || ''}{status.progress.total ? ` ${status.progress.done}/${status.progress.total}` : ''}</span>}
+        </div>
+      </div>
       {lastOk?.detail?.warnings?.length ? (
         <div className="notice error" style={{ marginTop: 0 }}>有 {lastOk.detail.warnings.length} 条挂靠提醒，见「同步记录」。</div>
       ) : null}
 
-      <Tabs type="line" activeKey={tab} onChange={setTab} keepDOM={false}>
-        <TabPane tab={`群会话${status ? `（共 ${status.sessionTotal}）` : ''}`} itemKey="sessions">
-          <div style={{ paddingTop: 20 }}><SessionsPage key={listKey} embedded fixedSource="wg" /></div>
-        </TabPane>
-        <TabPane tab="员工挂靠" itemKey="staff"><div style={{ paddingTop: 20 }}><StaffTab deptCode={dept.code} /></div></TabPane>
+      <Tabs type="button" activeKey={tab} onChange={setTab} keepDOM={false}>
+        <TabPane tab="员工挂靠" itemKey="staff"><div style={{ paddingTop: 16 }}><StaffTab deptCode={dept.code} /></div></TabPane>
         <TabPane tab="群筛选与切段" itemKey="config">
-          <div style={{ paddingTop: 20 }}>{status ? <ConfigTab deptCode={dept.code} config={status.config} onSaved={load} /> : <Spin />}</div>
+          <div style={{ paddingTop: 16 }}>{status ? <ConfigTab deptCode={dept.code} config={status.config} onSaved={load} /> : <Spin />}</div>
         </TabPane>
-        <TabPane tab="同步记录" itemKey="runs"><div style={{ paddingTop: 20 }}><RunsTab runs={status?.runs || []} /></div></TabPane>
+        <TabPane tab="同步记录" itemKey="runs"><div style={{ paddingTop: 16 }}><RunsTab runs={status?.runs || []} /></div></TabPane>
       </Tabs>
 
       <Modal title="同步对公群" visible={syncOpen} onCancel={() => setSyncOpen(false)} onOk={() => void start()} okText="开始同步" confirmLoading={starting}>
@@ -298,4 +283,4 @@ const GroupPage: React.FC = () => {
   )
 }
 
-export default GroupPage
+export default GroupSettingsTab
