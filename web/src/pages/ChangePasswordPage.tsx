@@ -1,9 +1,8 @@
 import React, { useState } from 'react'
-import { Button, Input, Toast, Typography } from '@douyinfe/semi-ui'
+import { Button, Input, Toast } from '@douyinfe/semi-ui'
 import { useAuth } from '../auth'
 import { api } from '../api'
-
-const { Title, Text } = Typography
+import PageHeader from '../components/PageHeader'
 
 /** 修改密码：首次登录强制进入；之后也可以从侧边栏进入 */
 const ChangePasswordPage: React.FC<{ forced?: boolean; onDone?: () => void }> = ({ forced, onDone }) => {
@@ -30,22 +29,37 @@ const ChangePasswordPage: React.FC<{ forced?: boolean; onDone?: () => void }> = 
     }
   }
 
-  const form = (
-    <div style={{ width: 380, display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <Title heading={4} style={{ margin: 0 }}>修改密码</Title>
-      {forced && <Text type="warning">{user?.displayName}，首次登录请先修改初始密码。</Text>}
-      <Input mode="password" placeholder="原密码" value={oldPassword} onChange={setOld} />
-      <Input mode="password" placeholder="新密码（至少 8 位）" value={newPassword} onChange={setNew} />
-      <Input mode="password" placeholder="再输一次新密码" value={confirm} onChange={setConfirm} onEnterPress={submit} />
-      <Button theme="solid" loading={loading} onClick={submit}>确认修改</Button>
-      {forced && <Button theme="borderless" type="tertiary" onClick={logout}>退出登录</Button>}
-    </div>
+  const fields = (
+    <>
+      <span className="login-label">原密码</span>
+      <Input size="large" mode="password" value={oldPassword} onChange={setOld} />
+      <span className="login-label">新密码（至少 8 位）</span>
+      <Input size="large" mode="password" value={newPassword} onChange={setNew} />
+      <span className="login-label">再输一次新密码</span>
+      <Input size="large" mode="password" value={confirm} onChange={setConfirm} onEnterPress={submit} />
+      <Button className="login-submit" theme="solid" block loading={loading} onClick={submit}>确认修改</Button>
+    </>
   )
 
-  if (!forced) return <div style={{ padding: 32 }}>{form}</div>
+  if (!forced) {
+    return (
+      <div className="page">
+        <PageHeader title="修改密码" desc="改完后，其他地方登录的这个账号会被退出。" />
+        <div className="login-card" style={{ width: 416 }}>{fields}</div>
+      </div>
+    )
+  }
   return (
-    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--app-sidebar-bg)' }}>
-      <div style={{ padding: '32px', background: '#fff', borderRadius: 12, boxShadow: 'var(--app-shadow-3)' }}>{form}</div>
+    <div className="login-surface">
+      <div className="login-column">
+        <div className="login-brand">
+          <div className="brand-mark">考核</div>
+          <div className="login-brand-title">客服考核<br />数据平台</div>
+        </div>
+        <div className="info-banner">{user?.displayName}，首次登录请先把初始密码改掉。</div>
+        <div className="login-card">{fields}</div>
+        <Button theme="borderless" type="tertiary" onClick={logout} style={{ alignSelf: 'flex-start' }}>退出登录</Button>
+      </div>
     </div>
   )
 }

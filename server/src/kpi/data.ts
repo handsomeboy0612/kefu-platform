@@ -1,0 +1,102 @@
+/**
+ * 绩效考核用的本地数据（口径和桌面版 db-service 一致）：
+ * - 回复率本地口径、出勤天数、差评剔除：按「分配时间（没有就用开始时间）」落在时段内的会话
+ * - AI 质检：按会话时间和时段有重叠的已评分会话
+ */
+import { query } from '../db'
+
+/** 预筛：分配时间一定不早于开始时间，按开始时间先圈一个范围走索引（往前多放 7 天） */
+const ANCHOR = 'IF(s.assign_time > 0, s.assign_time, s.start_time)'
+const PREFILTER = 's.start_time BETWEEN ? AND ?'
+const pre = (begin: number, end: number): [number, number] => [begin - 7 * 86400, end]
+
+export interface ReplyStat { den: number; num: number; graced: number; uncached: number }
+
+/**
+ * 回复率本地口径（按负责客服）：
+ * - 只算客户说过话的会话；是否人工回复看聊天记录里有没有客服（未撤回）发言
+ * - 没回复、且存活时间（结束 − 分配）< graceSec 的秒退会话不进分母；人工剔除的同样不进
+ * - 还没拉到聊天记录的回退用平台的客服消息数判断（含自动消息，偏宽），记 uncached
+ */
+export async function replyStats(projectId: string, begin: number, end: number, graceSec: number): Promise<Record<string, ReplyStat>> {
+  const rows = await query<{ uid: number; anchor: number; end_time: number; msgs_synced: number; kf_msg_count: number; staff: number; exempt: number }>(
+    `SELECT s.sys_user_id uid, ${ANCHOR} anchor, s.end_time, s.msgs_synced, s.kf_msg_count,
+            EXISTS (SELECT 1 FROM ss_messages m WHERE m.project_id = s.project_id AND m.session_id = s.session_id AND m.sender_type = 'staff' AND m.recalled = 0) staff,
+            EXISTS (SELECT 1 FROM kpi_exemptions e WHERE e.project_id = s.project_id AND e.session_id = s.session_id AND e.kind = 'reply') exempt
+     FROM ss_sessions s
+     WHERE s.project_id = ? AND ${PREFILTER} AND s.sys_user_id > 0 AND s.user_msg_count > 0 AND s.end_time > 0
+       AND ${ANCHOR} BETWEEN ? AND ?`,
+    [projectId, ...pre(begin, end), begin, end]
+  )
+  const acc: Record<string, ReplyStat> = {}
+  for (const r of rows) {
+    const k = String(r.uid)
+    const a = (acc[k] ||= { den: 0, num: 0, graced: 0, uncached: 0 })
+    let replied: boolean
+    if (r.msgs_synced) replied = !!r.staff
+    else { a.uncached++; replied = r.kf_msg_count > 0 }
+    if (!replied && (Number(r.end_time) - Number(r.anchor) < graceSec || r.exempt)) { a.graced++; continue }
+    a.den++
+    if (replied) a.num++
+  }
+  return acc
+}
+
+/** 出勤天数：时段内「当天有接待」就算 1 天（MySQL 会话时区是北京时间） */
+export async function activeDays(projectId: string, begin: number, end: number): Promise<Record<string, number>> {
+  const rows = await query<{ uid: number; days: number }>(
+    `SELECT s.sys_user_id uid, COUNT(DISTINCT DATE(FROM_UNIXTIME(${ANCHOR}))) days
+     FROM ss_sessions s WHERE s.project_id = ? AND ${PREFILTER} AND s.sys_user_id > 0 AND ${ANCHOR} BETWEEN ? AND ?
+     GROUP BY s.sys_user_id`,
+    [projectId, ...pre(begin, end), begin, end]
+  )
+  return Object.fromEntries(rows.map((r) => [String(r.uid), Number(r.days)]))
+}
+
+/** 差评剔除（按负责客服）：剔除条数和这些会话的真实星级和（按真实星级扣减） */
+export async function badReviewExempts(projectId: string, begin: number, end: number): Promise<Record<string, { cnt: number; sumStar: number }>> {
+  const rows = await query<{ uid: number; cnt: number; sum_star: number }>(
+    `SELECT s.sys_user_id uid, COUNT(*) cnt, SUM(s.star_score) sum_star
+     FROM kpi_exemptions e JOIN ss_sessions s ON s.project_id = e.project_id AND s.session_id = e.session_id
+     WHERE e.project_id = ? AND e.kind = 'bad_review' AND s.star_score > 0 AND s.sys_user_id > 0
+       AND ${PREFILTER} AND ${ANCHOR} BETWEEN ? AND ?
+     GROUP BY s.sys_user_id`,
+    [projectId, ...pre(begin, end), begin, end]
+  )
+  return Object.fromEntries(rows.map((r) => [String(r.uid), { cnt: Number(r.cnt), sumStar: Number(r.sum_star) }]))
+}
+
+/** AI 质检（按负责客服）：中位数、平均分、条数。会话时间和时段有重叠就算 */
+export async function aiScores(projectId: string, begin: number, end: number): Promise<Record<string, { median: number; avg: number; count: number }>> {
+  const rows = await query<{ uid: number; total: string | number }>(
+    `SELECT s.sys_user_id uid, sc.total_score total
+     FROM ss_sessions s JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id AND sc.status = 'ok'
+     WHERE s.project_id = ? AND s.sys_user_id > 0 AND s.start_time <= ?
+       AND IF(s.end_time > 0, s.end_time >= ?, s.start_time >= ?)`,
+    [projectId, end, begin, begin]
+  )
+  const by: Record<string, number[]> = {}
+  for (const r of rows) (by[String(r.uid)] ||= []).push(Number(r.total))
+  const out: Record<string, { median: number; avg: number; count: number }> = {}
+  for (const [k, xs] of Object.entries(by)) {
+    const sorted = [...xs].sort((a, b) => a - b)
+    const mid = Math.floor(sorted.length / 2)
+    const median = sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
+    out[k] = { median, avg: xs.reduce((a, b) => a + b, 0) / xs.length, count: xs.length }
+  }
+  return out
+}
+
+/** 时段内本地会话总数、已 AI 评分数（生成报表前提示覆盖率用） */
+export async function coverage(projectId: string, deptId: number, begin: number, end: number): Promise<{ total: number; scored: number; eligible: number }> {
+  const [r] = await query<{ total: number; scored: number; eligible: number }>(
+    `SELECT COUNT(*) total, SUM(sc.status = 'ok') scored,
+            SUM(s.user_msg_count > 0 AND m.participate = 1 AND m.active = 1) eligible
+     FROM ss_sessions s
+     JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
+     LEFT JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id
+     WHERE s.project_id = ? AND s.start_time BETWEEN ? AND ?`,
+    [deptId, projectId, begin, end]
+  )
+  return { total: Number(r?.total || 0), scored: Number(r?.scored || 0), eligible: Number(r?.eligible || 0) }
+}
