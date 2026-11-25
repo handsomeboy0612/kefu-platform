@@ -14,6 +14,7 @@ import { getScore, scoreView } from '../ai/service'
 
 interface SessionDbRow {
   session_id: string
+  source: string
   chat_user_id: string
   customer_name: string
   sys_user_id: number
@@ -37,6 +38,7 @@ interface SessionDbRow {
 
 const toView = (r: SessionDbRow): Record<string, unknown> => ({
   sessionId: r.session_id,
+  source: r.source,
   chatUserId: r.chat_user_id,
   customerName: r.customer_name,
   sysUserId: Number(r.sys_user_id),
@@ -60,7 +62,7 @@ const toView = (r: SessionDbRow): Record<string, unknown> => ({
 })
 
 const SELECT = `
-  SELECT s.session_id, s.chat_user_id, s.customer_name, s.sys_user_id, s.channel, s.start_time, s.end_time, s.assign_time,
+  SELECT s.session_id, s.source, s.chat_user_id, s.customer_name, s.sys_user_id, s.channel, s.start_time, s.end_time, s.assign_time,
          s.star_score, s.msg_count, s.user_msg_count, s.kf_msg_count, s.msgs_synced, m.nickname, m.participate, m.active,
          sc.status sc_status, sc.total_score sc_total, sc.grade sc_grade, sc.reviewed sc_reviewed`
 

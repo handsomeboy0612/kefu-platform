@@ -202,7 +202,7 @@ const SessionDrawer: React.FC<{
             <div><span>渠道</span><b>{channelName(session.channel)}</b></div>
             <div><span>开始</span><b>{fmtTime(session.startTime)}</b></div>
             <div><span>时长</span><b>{session.endTime ? fmtDuration(session.endTime - session.startTime) : '—'}</b></div>
-            <div><span>满意度</span><b><Stars v={session.starScore} /></b></div>
+            <div><span>满意度</span><b>{session.source === 'wg' ? <span className="form-hint" style={{ margin: 0 }}>群聊无评价</span> : <Stars v={session.starScore} />}</b></div>
             <div><span>消息</span><b>客户 {session.customerMsgCount} · 客服 {session.staffMsgCount}</b></div>
             <div style={{ gridColumn: '1 / -1' }}>
               <span>会话 ID</span>

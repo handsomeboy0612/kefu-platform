@@ -21,6 +21,8 @@ import { syncRoutes } from './routes/sync'
 import { scoreRoutes } from './routes/scores'
 import { kpiRoutes } from './routes/kpi'
 import { dashboardRoutes } from './routes/dashboard'
+import { groupRoutes } from './routes/group'
+import { startGroupScheduler } from './group/sync'
 import { startNightlyScheduler } from './ai/service'
 import { startScheduler } from './sync/salesmartly-sync'
 
@@ -55,6 +57,7 @@ async function main(): Promise<void> {
   await app.register(scoreRoutes)
   await app.register(kpiRoutes)
   await app.register(dashboardRoutes)
+  await app.register(groupRoutes)
 
   // 网页：dist/web 下的静态文件；非 /api 的未知路径都回 index.html（前端路由）
   const hasWeb = fs.existsSync(path.join(config.webDir, 'index.html'))
@@ -90,6 +93,8 @@ async function main(): Promise<void> {
   await startScheduler()
   // 每晚 01:00 自动评前一天的会话（部门在「设置 → AI 质检」里打开才会评）
   startNightlyScheduler()
+  // 对公群每小时同步（启动 3 分钟后第一轮）
+  startGroupScheduler()
   // 用 console.log：正式部署时日志级别是 warn，启动信息也要能在 logs\server.log 里看到
   console.log(`${new Date().toLocaleString('zh-CN')} 客服考核数据平台已启动：http://127.0.0.1:${config.port}${hasWeb ? '' : '（未找到网页打包产物，只提供接口）'}`)
 }

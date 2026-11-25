@@ -8,6 +8,7 @@ import { GRADES } from '../constants'
 
 interface Agg {
   sessions: number
+  wg: number
   spoke: number
   reviewed: number
   avgStar: number | null
@@ -131,7 +132,7 @@ const DashboardPage: React.FC = () => {
       {data && s && (
         <div className="stack" style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
           <div className="stat-row">
-            <StatTile label="会话" value={s.sessions.toLocaleString('zh-CN')} sub={`客户说过话的 ${s.spoke.toLocaleString('zh-CN')} 个`} />
+            <StatTile label="会话" value={s.sessions.toLocaleString('zh-CN')} sub={s.wg ? `其中对公群 ${s.wg} 个` : `客户说过话的 ${s.spoke.toLocaleString('zh-CN')} 个`} />
             <StatTile label="客户评价" value={s.avgStar == null ? '—' : `${s.avgStar.toFixed(2)} 星`} sub={`${s.reviewed} 个会话评价，评价率 ${s.spoke ? Math.round((s.reviewed / s.spoke) * 1000) / 10 : 0}%`} />
             <StatTile label="好评" value={s.good} sub={`4~5 星，占评价 ${s.reviewed ? Math.round((s.good / s.reviewed) * 1000) / 10 : 0}%`} />
             <StatTile label="差评" value={s.bad} sub={`1~2 星；3 星中评 ${s.mid} 个`} />

@@ -24,7 +24,7 @@ export async function replyStats(projectId: string, begin: number, end: number, 
             EXISTS (SELECT 1 FROM ss_messages m WHERE m.project_id = s.project_id AND m.session_id = s.session_id AND m.sender_type = 'staff' AND m.recalled = 0) staff,
             EXISTS (SELECT 1 FROM kpi_exemptions e WHERE e.project_id = s.project_id AND e.session_id = s.session_id AND e.kind = 'reply') exempt
      FROM ss_sessions s
-     WHERE s.project_id = ? AND ${PREFILTER} AND s.sys_user_id > 0 AND s.user_msg_count > 0 AND s.end_time > 0
+     WHERE s.project_id = ? AND s.source = 'ss' AND ${PREFILTER} AND s.sys_user_id > 0 AND s.user_msg_count > 0 AND s.end_time > 0
        AND ${ANCHOR} BETWEEN ? AND ?`,
     [projectId, ...pre(begin, end), begin, end]
   )
@@ -46,7 +46,7 @@ export async function replyStats(projectId: string, begin: number, end: number, 
 export async function activeDays(projectId: string, begin: number, end: number): Promise<Record<string, number>> {
   const rows = await query<{ uid: number; days: number }>(
     `SELECT s.sys_user_id uid, COUNT(DISTINCT DATE(FROM_UNIXTIME(${ANCHOR}))) days
-     FROM ss_sessions s WHERE s.project_id = ? AND ${PREFILTER} AND s.sys_user_id > 0 AND ${ANCHOR} BETWEEN ? AND ?
+     FROM ss_sessions s WHERE s.project_id = ? AND s.source = 'ss' AND ${PREFILTER} AND s.sys_user_id > 0 AND ${ANCHOR} BETWEEN ? AND ?
      GROUP BY s.sys_user_id`,
     [projectId, ...pre(begin, end), begin, end]
   )
@@ -71,7 +71,7 @@ export async function aiScores(projectId: string, begin: number, end: number): P
   const rows = await query<{ uid: number; total: string | number }>(
     `SELECT s.sys_user_id uid, sc.total_score total
      FROM ss_sessions s JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id AND sc.status = 'ok'
-     WHERE s.project_id = ? AND s.sys_user_id > 0 AND s.start_time <= ?
+     WHERE s.project_id = ? AND s.source = 'ss' AND s.sys_user_id > 0 AND s.start_time <= ?
        AND IF(s.end_time > 0, s.end_time >= ?, s.start_time >= ?)`,
     [projectId, end, begin, begin]
   )
@@ -99,4 +99,51 @@ export async function coverage(projectId: string, deptId: number, begin: number,
     [deptId, projectId, begin, end]
   )
   return { total: Number(r?.total || 0), scored: Number(r?.scored || 0), eligible: Number(r?.eligible || 0) }
+}
+
+/**
+ * 对公群（技术支持部第二项）：每人接手的群会话、涉及的群数，以及每个群会话的首响 / 均响（秒）。
+ * 等待从客户发言算起（客户连着发、间隔不超过 60 秒的算一轮，从这一轮最后一句算）到客服回复；派单等系统消息不算。
+ */
+export async function groupStats(projectId: string, deptId: number, begin: number, end: number): Promise<Record<string, { name: string; roomCnt: number; threads: Array<{ firstSec: number | null; avgSec: number | null }> }>> {
+  const sessions = await query<{ session_id: string; sys_user_id: number; room_id: string; nickname: string }>(
+    `SELECT s.session_id, s.sys_user_id, s.room_id, m.nickname FROM ss_sessions s
+     JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
+     WHERE s.project_id = ? AND s.source = 'wg' AND s.start_time BETWEEN ? AND ?`,
+    [deptId, projectId, begin, end]
+  )
+  if (!sessions.length) return {}
+  const msgs = await query<{ session_id: string; sender_type: string; send_time: number }>(
+    `SELECT session_id, sender_type, send_time FROM ss_messages
+     WHERE project_id = ? AND session_id IN (?) AND sender_type IN ('customer', 'staff') ORDER BY session_id, send_time, id`,
+    [projectId, sessions.map((s) => s.session_id)]
+  )
+  const bySession = new Map<string, Array<{ t: string; at: number }>>()
+  for (const m of msgs) {
+    let l = bySession.get(m.session_id)
+    if (!l) bySession.set(m.session_id, (l = []))
+    l.push({ t: m.sender_type, at: Number(m.send_time) })
+  }
+  const acc: Record<string, { name: string; rooms: Set<string>; threads: Array<{ firstSec: number | null; avgSec: number | null }> }> = {}
+  for (const s of sessions) {
+    const key = String(s.sys_user_id)
+    const a = (acc[key] ||= { name: s.nickname, rooms: new Set(), threads: [] })
+    a.rooms.add(s.room_id)
+    const waits: number[] = []
+    let pending: number[] = []
+    for (const m of bySession.get(s.session_id) || []) {
+      if (m.t === 'customer') pending.push(m.at)
+      else if (pending.length) {
+        let start = pending[0]
+        for (let i = 1; i < pending.length && pending[i] - pending[i - 1] <= 60; i++) start = pending[i]
+        waits.push(Math.max(0, m.at - start))
+        pending = []
+      }
+    }
+    a.threads.push({
+      firstSec: waits.length ? waits[0] : null,
+      avgSec: waits.length ? Math.round(waits.reduce((x, y) => x + y, 0) / waits.length) : null
+    })
+  }
+  return Object.fromEntries(Object.entries(acc).map(([k, v]) => [k, { name: v.name, roomCnt: v.rooms.size, threads: v.threads }]))
 }

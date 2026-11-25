@@ -224,6 +224,18 @@ const SCHEMA: string[] = [
     KEY idx_dept (department_id, scored_at)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
+  // 群内员工挂靠：企业微信 user_id → SaleSmartly 成员（sys_user_id = 0 表示没挂上）
+  `CREATE TABLE IF NOT EXISTS wg_staff (
+    user_id      VARCHAR(128) NOT NULL PRIMARY KEY,
+    nickname     VARCHAR(128) NOT NULL DEFAULT '',   -- 群昵称（如「技术支持部-蒋海军」），没有就用个人昵称
+    raw_name     VARCHAR(128) NOT NULL DEFAULT '',   -- 消息里的个人昵称
+    sys_user_id  BIGINT       NOT NULL DEFAULT 0,
+    manual       TINYINT      NOT NULL DEFAULT 0,    -- 1 = 手动指定（自动匹配不覆盖）
+    last_seen_at BIGINT       NOT NULL DEFAULT 0,
+    updated_by   VARCHAR(64)  NOT NULL DEFAULT '',
+    updated_at   BIGINT       NOT NULL DEFAULT 0
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
   // 绩效考核的人工剔除：reply = 回复率扣分剔除（复核后认为不该扣），bad_review = 差评申诉剔除
   `CREATE TABLE IF NOT EXISTS kpi_exemptions (
     project_id  VARCHAR(64)  NOT NULL,
@@ -260,8 +272,21 @@ const SCHEMA: string[] = [
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`
 ]
 
+/** 给已有的表补列（MySQL 8 没有 ADD COLUMN IF NOT EXISTS） */
+async function addColumn(table: string, column: string, ddl: string): Promise<void> {
+  const [row] = await query<{ n: number }>(
+    'SELECT COUNT(*) n FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?', [table, column]
+  )
+  if (!Number(row?.n)) await execute(`ALTER TABLE ${table} ADD COLUMN ${ddl}`)
+}
+
 export async function ensureSchema(): Promise<void> {
   for (const sql of SCHEMA) await execute(sql)
+  // 会话来源：ss = SaleSmartly，wg = 企业微信对公群（群消息切段后的「群会话」，渠道号 -2）
+  await addColumn('ss_sessions', 'source', "source VARCHAR(8) NOT NULL DEFAULT 'ss' AFTER session_id")
+  await addColumn('ss_sessions', 'room_id', "room_id VARCHAR(128) NOT NULL DEFAULT '' AFTER source")
+  // 同步结果的补充信息（对公群的挂靠提醒、采集中断等）
+  await addColumn('sync_runs', 'detail', 'detail JSON NULL')
   // 早期建的这几张表没写排序规则，用了 MySQL 默认的 utf8mb4_0900_ai_ci，和会话表 JOIN 会报排序规则冲突
   for (const t of ['kpi_exemptions', 'kpi_manual']) {
     const [row] = await query<{ c: string }>(

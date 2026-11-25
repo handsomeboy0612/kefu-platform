@@ -9,7 +9,7 @@ import { defaultRules, getRules, normalizeRules, resetRules, saveRules, type CsR
 import { loadInputs, SsReportError } from '../kpi/inputs'
 import { calcCs } from '../kpi/calc-cs'
 import { calcTech, type GroupStats } from '../kpi/calc-tech'
-import { coverage } from '../kpi/data'
+import { coverage, groupStats } from '../kpi/data'
 
 const MAX_DAYS = 62
 const ANCHOR = 'IF(s.assign_time > 0, s.assign_time, s.start_time)'
@@ -44,9 +44,9 @@ async function getManual(deptId: number, month: string): Promise<Record<string, 
   return out
 }
 
-/** 对公群数据：一期第 6 步接上，现在没有 */
-async function groupStats(): Promise<GroupStats> {
-  return {}
+/** 对公群数据（只有开了对公群的部门有） */
+async function loadGroupStats(dept: Department, projectId: string, begin: number, end: number): Promise<GroupStats> {
+  return dept.groupChat ? groupStats(projectId, dept.id, begin, end) : {}
 }
 
 /** 检查会话属于本部门客服 */
@@ -112,7 +112,7 @@ export async function kpiRoutes(app: FastifyInstance): Promise<void> {
     }
     const month = monthOf(begin)
     const results = dept.kpiTemplate === 'tech'
-      ? calcTech(rules as TechRules, inputs, await getManual(dept.id, month), await groupStats())
+      ? calcTech(rules as TechRules, inputs, await getManual(dept.id, month), await loadGroupStats(dept, projectId, begin, end))
       : calcCs(rules as CsRules, inputs)
     const uncached = Object.values(inputs.reply).reduce((s, v) => s + v.uncached, 0)
     const payload = { results, excluded: inputs.excluded, month, replyUncached: uncached }

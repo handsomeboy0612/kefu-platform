@@ -30,6 +30,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     const params = [dept.id, projectId, begin, end]
     const agg = `
       COUNT(*) sessions,
+      SUM(s.source = 'wg') wg,
       SUM(s.user_msg_count > 0) spoke,
       SUM(s.star_score > 0) reviewed,
       SUM(s.star_score) star_sum,
@@ -40,12 +41,13 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       SUM(sc.total_score) ai_sum,
       SUM(sc.grade IN ('优秀', '良好')) ai_good`
 
-    type Agg = { sessions: number; spoke: number; reviewed: number; star_sum: number; good: number; mid: number; bad: number; ai_count: number; ai_sum: number; ai_good: number }
+    type Agg = { wg: number; sessions: number; spoke: number; reviewed: number; star_sum: number; good: number; mid: number; bad: number; ai_count: number; ai_sum: number; ai_good: number }
     const shape = (a: Agg): Record<string, number | null> => {
       const reviewed = Number(a.reviewed || 0)
       const aiCount = Number(a.ai_count || 0)
       return {
         sessions: Number(a.sessions || 0),
+        wg: Number(a.wg || 0),
         spoke: Number(a.spoke || 0),
         reviewed,
         avgStar: reviewed ? Math.round((Number(a.star_sum || 0) / reviewed) * 100) / 100 : null,

@@ -57,3 +57,51 @@ export async function testArchive(cfg: ArchiveSettings): Promise<{ ok: boolean; 
     return { ok: false, message: describeFetchError(err) }
   }
 }
+
+// ─── 对公群同步用 ───────────────────────────────────────
+
+export interface ArchiveGroup { room_id: string; room_name: string; member_count: number; last_msg_at: number; msg_total: number }
+export interface ArchiveMember { user_id: string; nickname: string; is_staff: number; left_at: number }
+export interface ArchiveStaff { user_id: string; nickname: string; groups: number; msg_total: number }
+export interface ArchiveGap { agent_name: string; start: number; end: number; seconds: number }
+export interface ArchiveMessage {
+  msg_id: string
+  room_id: string
+  sender_id: string
+  sender_name: string
+  is_staff: number
+  is_self: number
+  msg_type: number
+  content: string
+  at_list?: Array<{ user_id: string; nickname: string }>
+  refer_id?: string
+  media_key?: string
+  send_time: number
+}
+
+export const fetchGroups = async (cfg: ArchiveSettings): Promise<ArchiveGroup[]> =>
+  (await archiveGet<{ list: ArchiveGroup[] }>(cfg, '/groups')).list || []
+
+export const fetchGroupMembers = async (cfg: ArchiveSettings, roomId: string): Promise<ArchiveMember[]> =>
+  (await archiveGet<{ members: ArchiveMember[] }>(cfg, `/groups/${encodeURIComponent(roomId)}/members`)).members || []
+
+export const fetchStaff = async (cfg: ArchiveSettings): Promise<ArchiveStaff[]> =>
+  (await archiveGet<{ list: ArchiveStaff[] }>(cfg, '/staff')).list || []
+
+export const fetchGaps = async (cfg: ArchiveSettings, begin: number, end: number): Promise<ArchiveGap[]> =>
+  (await archiveGet<{ list: ArchiveGap[] }>(cfg, '/gaps', { begin, end })).list || []
+
+/** 按时间段拉群消息（游标翻页，按 (send_time, msg_id) 升序） */
+export async function fetchMessagesByRange(cfg: ArchiveSettings, begin: number, end: number): Promise<ArchiveMessage[]> {
+  const all: ArchiveMessage[] = []
+  let after = ''
+  for (;;) {
+    const params: Record<string, string | number> = { begin, end, limit: 2000 }
+    if (after) params.after = after
+    const data = await archiveGet<{ list: ArchiveMessage[]; next: string; has_more: boolean }>(cfg, '/messages', params)
+    all.push(...(data.list || []))
+    if (!data.has_more || !data.next) break
+    after = data.next
+  }
+  return all
+}

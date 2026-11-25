@@ -57,7 +57,8 @@ async function writeGrade(cfg: SalesmartlySettings, sessionId: string, grade: st
 
 /** 评分完成后调用：开关关着就什么都不做；出错只记日志 */
 export function writeGradeSafe(cfg: SalesmartlySettings, sessionId: string, grade: string): void {
-  if (!cfg.writeBackTags || !cfg.apiToken) return
+  // 群会话不在 SaleSmartly 里，没有标签可写
+  if (!cfg.writeBackTags || !cfg.apiToken || sessionId.startsWith('wg_')) return
   writeGrade(cfg, sessionId, grade).catch((err: Error) => {
     console.error(`[tag] 会话 ${sessionId} 评级标签写回失败：${err.message}`)
   })

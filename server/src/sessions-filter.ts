@@ -13,6 +13,8 @@ export interface SessionFilter {
   /** scored / unscored / failed */
   score: string
   grade: string
+  /** ss = SaleSmartly 在线咨询，wg = 对公群；空 = 全部 */
+  source: string
 }
 
 const int = (v: unknown): number | null => {
@@ -30,7 +32,8 @@ export function parseFilter(q: Record<string, unknown>): SessionFilter {
     keyword: String(q.keyword ?? '').trim(),
     participate: q.participate === '1' || q.participate === 1 || q.participate === true,
     score: String(q.score ?? ''),
-    grade: String(q.grade ?? '')
+    grade: String(q.grade ?? ''),
+    source: q.source === 'ss' || q.source === 'wg' ? String(q.source) : ''
   }
 }
 
@@ -69,6 +72,7 @@ export function filterSql(f: SessionFilter): { cond: string; params: unknown[] }
     case 'unscored': where.push("(sc.session_id IS NULL OR sc.status <> 'ok')"); break
     case 'failed': where.push("sc.status = 'failed'"); break
   }
+  if (f.source) { where.push('s.source = ?'); params.push(f.source) }
   if (f.grade) { where.push("sc.status = 'ok' AND sc.grade = ?"); params.push(f.grade) }
   return { cond: where.length ? ` AND ${where.join(' AND ')}` : '', params }
 }

@@ -4,7 +4,9 @@ export const CHANNEL_NAMES: Record<number, string> = {
   6: 'LINE', 7: 'WhatsApp', 8: 'FB评论', 9: '第三方', 10: 'Slack',
   11: '微信客服', 12: 'WA个人号', 13: 'Ins评论', 14: '企业微信', 15: 'TG应用',
   16: 'TikTok私信', 17: 'TikTok评论', 18: 'VK', 19: 'Zalo', 20: 'TT商业号',
-  21: 'TT商业评论', 22: 'YouTube', 23: '微信', 24: 'LINE个号'
+  21: 'TT商业评论', 22: 'YouTube', 23: '微信', 24: 'LINE个号',
+  // 平台自己的来源：企业微信对公群（群消息切段后的群会话）
+  [-2]: '企微群'
 }
 
 export const channelName = (c: number): string => CHANNEL_NAMES[c] || `渠道${c}`

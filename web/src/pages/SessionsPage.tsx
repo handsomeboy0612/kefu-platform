@@ -12,6 +12,7 @@ import { copyText, fmtTime } from '../utils'
 
 export interface SessionItem {
   sessionId: string
+  source?: 'ss' | 'wg'
   chatUserId: string
   customerName: string
   sysUserId: number
@@ -62,8 +63,10 @@ const AI_OPTIONS = [
   ...GRADES.map((g) => ({ value: `grade:${g}`, label: g }))
 ]
 
-const SessionsPage: React.FC = () => {
+/** embedded：嵌在别的页面里（对公群页），不显示页头；fixedSource：固定只看某个来源 */
+const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> = ({ embedded, fixedSource }) => {
   const { dept } = useAuth()
+  const [source, setSource] = useState<'' | 'ss' | 'wg'>(fixedSource || '')
   const today = new Date()
   const [range, setRange] = useState<[Date, Date]>([new Date(today.getFullYear(), today.getMonth(), 1), today])
   const [member, setMember] = useState<number | ''>('')
@@ -92,8 +95,9 @@ const SessionsPage: React.FC = () => {
     keyword: kwApplied,
     participate: onlyAssessed ? 1 : '',
     score: aiFilter.startsWith('grade:') ? '' : aiFilter,
-    grade: aiFilter.startsWith('grade:') ? aiFilter.slice(6) : ''
-  }), [range, member, channel, star, kwApplied, onlyAssessed, aiFilter])
+    grade: aiFilter.startsWith('grade:') ? aiFilter.slice(6) : '',
+    source
+  }), [range, member, channel, star, kwApplied, onlyAssessed, aiFilter, source])
 
   const load = useCallback(async (): Promise<void> => {
     if (!dept) return
@@ -204,7 +208,7 @@ const SessionsPage: React.FC = () => {
         </div>
       )
     },
-    { title: '满意度', dataIndex: 'starScore', width: 120, render: (v: number) => <Stars v={v} /> },
+    { title: '满意度', dataIndex: 'starScore', width: 120, render: (v: number, r: SessionItem) => (r.source === 'wg' ? <span className="form-hint" style={{ margin: 0 }}>群聊无评价</span> : <Stars v={v} />) },
     {
       title: 'AI 质检', key: 'ai', width: 150,
       render: (_: unknown, r: SessionItem) => {
@@ -244,10 +248,10 @@ const SessionsPage: React.FC = () => {
   const jobRunning = !!job && !job.finishedAt
 
   return (
-    <div className="page">
-      <PageHeader
+    <div className={embedded ? 'stack' : 'page'}>
+      {!embedded && <PageHeader
         title="会话记录"
-        desc="查看 SaleSmartly 会话、聊天记录和 AI 质检评分，按客服、时间、满意度筛选。"
+        desc={dept.groupChat ? '在线咨询（SaleSmartly）和对公群的会话、聊天记录和 AI 质检评分。' : '查看 SaleSmartly 会话、聊天记录和 AI 质检评分，按客服、时间、满意度筛选。'}
         scope={dept.name}
         scopeHint="只显示本部门客服接待的会话 · 按会话开始时间筛选 · 北京时间"
         extra={
@@ -262,7 +266,7 @@ const SessionsPage: React.FC = () => {
             <Button onClick={() => { reloadStatus(); setSyncOpen(true) }}>同步数据</Button>
           </>
         }
-      />
+      />}
 
       {noProject && <div className="notice">本部门还没有填 SaleSmartly 项目，先到「设置 → 数据源与 AI」里填好。</div>}
 
@@ -288,6 +292,13 @@ const SessionsPage: React.FC = () => {
             style={{ width: 200 }}
           />
         </div>
+        {dept.groupChat && !fixedSource && (
+          <div className="filter-item">
+            <span className="form-label">来源</span>
+            <Select value={source} onChange={(v) => resetPage(setSource)((v || '') as '' | 'ss' | 'wg')} style={{ width: 130 }}
+              optionList={[{ value: '', label: '全部' }, { value: 'ss', label: '在线咨询' }, { value: 'wg', label: '对公群' }]} />
+          </div>
+        )}
         <div className="filter-item">
           <span className="form-label">渠道</span>
           <Select

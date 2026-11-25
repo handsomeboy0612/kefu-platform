@@ -9,6 +9,7 @@ import SettingsPage from './pages/SettingsPage'
 import SessionsPage from './pages/SessionsPage'
 import DashboardPage from './pages/DashboardPage'
 import KpiPage from './pages/kpi/KpiPage'
+import GroupPage from './pages/GroupPage'
 
 /** 一期还没做好的页面占位 */
 const Placeholder: React.FC<{ title: string; desc: string }> = ({ title, desc }) => {
@@ -38,6 +39,7 @@ const PAGES: Record<string, React.ReactNode> = {
   '/sessions': <SessionsPage />,
   '/dashboard': <DashboardPage />,
   '/kpi': <KpiPage />,
+  '/group': <GroupPage />,
   '/settings': <SettingsPage />
 }
 
