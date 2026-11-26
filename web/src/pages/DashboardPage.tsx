@@ -5,10 +5,10 @@ import { useAuth } from '../auth'
 import PageHeader from '../components/PageHeader'
 import { C_BAD, C_GOOD, DivergingBars, DivergingColumns, HBars, Legend, LineChart } from '../components/charts'
 import { GRADES } from '../constants'
+import { fmtSec } from './kpi/types'
 
 interface Agg {
   sessions: number
-  wg: number
   spoke: number
   reviewed: number
   avgStar: number | null
@@ -20,7 +20,14 @@ interface Agg {
   aiGoodRate: number | null
 }
 
+/** 对公群（AI 整理的群问题，口径和绩效第二项一致） */
+interface GroupAgg {
+  issues: number; resolved: number; unresolved: number; handed: number; unknown: number
+  closureRate: number | null; avgFirstSec: number | null; avgResolveSec: number | null
+}
+
 interface Dashboard {
+  group: { summary: GroupAgg; daily: Array<GroupAgg & { date: string }>; byMember: Array<GroupAgg & { sysUserId: number; name: string; participate: boolean }> } | null
   summary: Agg
   daily: Array<Agg & { date: string }>
   byMember: Array<Agg & { sysUserId: number; name: string; participate: boolean }>
@@ -48,6 +55,50 @@ const StatTile: React.FC<{ label: string; value: React.ReactNode; sub?: React.Re
     {sub && <div className="stat-sub">{sub}</div>}
   </div>
 )
+
+/** 对公群：AI 整理的群问题（只算本部门的人处理的，按客户第一次提问的时间算在哪天，和绩效第二项一致） */
+const GroupSection: React.FC<{ g: NonNullable<Dashboard['group']> }> = ({ g }) => {
+  const t = g.summary
+  const cols = [
+    { title: '处理人', dataIndex: 'name', render: (v: string, r: GroupAgg & { participate: boolean }) => <span>{v}{!r.participate && <span className="form-hint" style={{ margin: '0 0 0 6px' }}>不参与考核</span>}</span> },
+    { title: '群问题', dataIndex: 'issues', width: 90, align: 'right' as const },
+    { title: '已解决', dataIndex: 'resolved', width: 90, align: 'right' as const },
+    { title: '未解决', dataIndex: 'unresolved', width: 90, align: 'right' as const, render: (v: number) => (v ? <b style={{ color: '#9C3B26' }}>{v}</b> : 0) },
+    { title: '交接', dataIndex: 'handed', width: 80, align: 'right' as const },
+    { title: '判断不了', dataIndex: 'unknown', width: 100, align: 'right' as const },
+    { title: '闭环率', dataIndex: 'closureRate', width: 100, align: 'right' as const, render: (v: number | null) => (v == null ? '—' : `${v}%`) },
+    { title: '平均首响', dataIndex: 'avgFirstSec', width: 110, align: 'right' as const, render: (v: number | null) => fmtSec(v) },
+    { title: '平均处理时效', dataIndex: 'avgResolveSec', width: 130, align: 'right' as const, render: (v: number | null) => fmtSec(v) }
+  ]
+  return (
+    <>
+      <div className="panel-title" style={{ margin: '12px 0 -4px' }}>对公群（AI 整理的群问题）</div>
+      <div className="stat-row">
+        <StatTile label="群问题" value={t.issues} sub="本部门的人处理的" />
+        <StatTile label="已解决" value={t.resolved} sub={`未解决 ${t.unresolved} · 交接 ${t.handed} · 判断不了 ${t.unknown}`} />
+        <StatTile label="闭环率" value={t.closureRate == null ? '—' : `${t.closureRate}%`} sub="解决算 1，交接 0.8 / 0.4，判断不了不算" />
+        <StatTile label="平均首响" value={fmtSec(t.avgFirstSec)} sub="从被 @ 或客户提问算起" />
+        <StatTile label="平均处理时效" value={fmtSec(t.avgResolveSec)} sub="已解决的，从首次响应到解决" />
+      </div>
+      <div className="dash-grid">
+        <div className="panel">
+          <div className="panel-title">每日群问题</div>
+          <LineChart data={g.daily.map((d) => ({ label: d.date, value: d.issues }))} valueName="群问题" formatX={md} />
+          <div className="footnote">按客户第一次提问的时间分到每天；商务等其他部门处理的、没人处理的不算，在「群问题」页看。</div>
+        </div>
+        <div className="panel">
+          <div className="panel-title">每日已解决</div>
+          <LineChart data={g.daily.map((d) => ({ label: d.date, value: d.resolved }))} valueName="已解决" formatX={md} />
+          <div className="footnote">AI 判断的状态，主管在「群问题」里改过的按改过的算。</div>
+        </div>
+      </div>
+      <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '20px 24px 8px' }} className="panel-title">按人明细（对公群）</div>
+        <Table rowKey="sysUserId" columns={cols} dataSource={g.byMember} pagination={false} size="middle" />
+      </div>
+    </>
+  )
+}
 
 const DashboardPage: React.FC = () => {
   const { dept } = useAuth()
@@ -103,7 +154,7 @@ const DashboardPage: React.FC = () => {
     <div className="page">
       <PageHeader
         title="统计看板"
-        desc="会话量、客户好评差评和 AI 质检，按天和按客服看。"
+        desc={dept.groupChat ? '在线咨询的会话量、客户好评差评和 AI 质检；对公群的群问题单独统计，口径和绩效第二项一致。' : '会话量、客户好评差评和 AI 质检，按天和按客服看。'}
         scope={dept.name}
         scopeHint="按会话开始时间统计 · 好评 = 4~5 星，差评 = 1~2 星 · 北京时间"
       />
@@ -131,8 +182,9 @@ const DashboardPage: React.FC = () => {
       {!data && !loading && <div className="notice">本部门还没有填 SaleSmartly 项目，或者还没有同步数据。</div>}
       {data && s && (
         <div className="stack" style={{ opacity: loading ? 0.6 : 1, transition: 'opacity .2s' }}>
+          {data.group && <div className="panel-title" style={{ margin: '4px 0 -4px' }}>在线咨询（SaleSmartly）</div>}
           <div className="stat-row">
-            <StatTile label="会话" value={s.sessions.toLocaleString('zh-CN')} sub={s.wg ? `其中对公群 ${s.wg} 个` : `客户说过话的 ${s.spoke.toLocaleString('zh-CN')} 个`} />
+            <StatTile label={data.group ? '在线咨询会话' : '会话'} value={s.sessions.toLocaleString('zh-CN')} sub={`客户说过话的 ${s.spoke.toLocaleString('zh-CN')} 个`} />
             <StatTile label="客户评价" value={s.avgStar == null ? '—' : `${s.avgStar.toFixed(2)} 星`} sub={`${s.reviewed} 个会话评价，评价率 ${s.spoke ? Math.round((s.reviewed / s.spoke) * 1000) / 10 : 0}%`} />
             <StatTile label="好评" value={s.good} sub={`4~5 星，占评价 ${s.reviewed ? Math.round((s.good / s.reviewed) * 1000) / 10 : 0}%`} />
             <StatTile label="差评" value={s.bad} sub={`1~2 星；3 星中评 ${s.mid} 个`} />
@@ -176,9 +228,11 @@ const DashboardPage: React.FC = () => {
           </div>
 
           <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
-            <div style={{ padding: '20px 24px 8px' }} className="panel-title">按客服明细</div>
+            <div style={{ padding: '20px 24px 8px' }} className="panel-title">按客服明细{data.group ? '（在线咨询）' : ''}</div>
             <Table rowKey="sysUserId" columns={columns} dataSource={members} pagination={false} size="middle" />
           </div>
+
+          {data.group && <GroupSection g={data.group} />}
         </div>
       )}
     </div>
