@@ -14,7 +14,7 @@ import {
   type ArchiveGap, type ArchiveMessage
 } from '../services/archive'
 import { describeFetchError } from '../services/salesmartly'
-import { getGroupConfig } from './config'
+import { getGroupConfig, roomCounted } from './config'
 import { autoAnalyze } from '../issues/analyze'
 import { refreshIssueSessions } from '../issues/sessions'
 
@@ -86,8 +86,8 @@ async function doSync(dept: Department, projectId: string, begin: number, end: n
     const chosen = new Set(gc.selectedRooms)
     for (const g of groups) if (chosen.has(g.room_id)) rooms.set(g.room_id, g.room_name)
   } else {
-    const kw = gc.roomKeyword.trim()
-    const cands = groups.filter((g) => !kw || (g.room_name || '').includes(kw))
+    // 群名关键词、排除关键词（渠道合作群等）
+    const cands = groups.filter((g) => roomCounted(gc, g.room_id, g.room_name))
     progress.total = cands.length
     for (const g of cands) {
       // 全是员工的内部群（告警群等）不算；成员快照还没到的群先算上，宁多勿漏

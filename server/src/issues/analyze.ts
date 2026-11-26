@@ -15,7 +15,7 @@ import { getDeptSetting, isSectionConfigured, type AISettings } from '../setting
 import { AIConfigError, callAI, RetryableError } from '../ai/score'
 import { ISSUE_PROMPT, PROMPT_VERSION } from './prompt'
 import { fetchGroups } from '../services/archive'
-import { getGroupConfig } from '../group/config'
+import { getGroupConfig, roomCounted } from '../group/config'
 import { refreshIssueSessions } from './sessions'
 
 const CARRY_DAYS = 3
@@ -437,9 +437,10 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
   const today = dayOf(now())
   if (to > today) to = today
   if (from > to) throw new Error('日期不对（不能分析还没到的天）')
-  const quietSec = (await getGroupConfig(dept)).gapMin * 60
+  const gc = await getGroupConfig(dept)
+  const quietSec = gc.gapMin * 60
   // 选中的群：同步时存过消息的群（room_name 取群会话里的名字，没有就用 ID）
-  const rooms = await query<{ room_id: string }>(
+  const allRooms = await query<{ room_id: string }>(
     'SELECT DISTINCT room_id FROM wg_messages WHERE send_time >= ? AND send_time < ?', [dayStart(from) - CARRY_DAYS * 86400, dayStart(to) + 86400]
   )
   // 群名：从归档服务取；取不到就用群会话里存的名字
@@ -449,6 +450,18 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
   try {
     for (const g of await fetchGroups(await getDeptSetting(dept.code, 'archive'))) if (g.room_name) names.set(g.room_id, g.room_name)
   } catch { /* 归档服务连不上就用已有的名字 */ }
+  // 现在不算的群（改了群筛选、排除了渠道群等）：不分析，以前分析出的问题删掉（群名不知道的先留着）
+  const notCounted = (id: string): boolean => names.has(id) && !roomCounted(gc, id, names.get(id) || '')
+  const stale = (await query<{ room_id: string }>(
+    'SELECT DISTINCT room_id FROM wg_issue_runs WHERE department_id = ? UNION SELECT DISTINCT room_id FROM wg_issues WHERE department_id = ?', [dept.id, dept.id]
+  )).map((r) => r.room_id).filter(notCounted)
+  for (let i = 0; i < stale.length; i += 200) {
+    const ids = stale.slice(i, i + 200)
+    await execute('DELETE FROM wg_issues WHERE department_id = ? AND room_id IN (?)', [dept.id, ids])
+    await execute('DELETE FROM wg_issue_runs WHERE department_id = ? AND room_id IN (?)', [dept.id, ids])
+  }
+  if (stale.length) console.log(`[issues] ${dept.name} ${stale.length} 个群现在不算对公群，删掉了以前分析出的问题`)
+  const rooms = allRooms.filter((r) => !notCounted(r.room_id))
   const p: AnalyzeProgress = { from, to, rooms: rooms.length, roomsDone: 0, calls: 0, failed: 0, startedAt: now(), by }
   running.set(dept.code, p)
   void (async () => {

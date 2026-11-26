@@ -5,7 +5,7 @@ import { api } from '../../api'
 import { useAuth } from '../../auth'
 import { fmtTime } from '../../utils'
 
-interface GroupConfig { roomFilterMode: 'keyword' | 'manual'; roomKeyword: string; selectedRooms: string[]; gapMin: number }
+interface GroupConfig { roomFilterMode: 'keyword' | 'manual'; roomKeyword: string; excludeKeywords: string[]; selectedRooms: string[]; gapMin: number }
 interface Run {
   id: number; trigger: string; triggeredBy: string; rangeBegin: number; rangeEnd: number; status: string
   startedAt: number; finishedAt: number; error: string | null
@@ -20,7 +20,7 @@ interface Status {
   runs: Run[]
 }
 interface Staff { userId: string; nickname: string; rawName: string; sysUserId: number; manual: boolean; lastSeenAt: number; memberName: string; counted: boolean }
-interface Room { roomId: string; roomName: string; memberCount: number; msgTotal: number; lastMsgAt: number; internal: boolean }
+interface Room { roomId: string; roomName: string; memberCount: number; msgTotal: number; lastMsgAt: number; internal: boolean; excluded?: boolean }
 
 const TECH_RE = /技术支持|技术组|研发|开发/
 
@@ -92,7 +92,9 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
   const [rooms, setRooms] = useState<Room[] | null>(null)
   const [saving, setSaving] = useState(false)
   const [kw, setKw] = useState('')
-  useEffect(() => { setC(config) }, [config])
+  const [exText, setExText] = useState((config.excludeKeywords || []).join('，'))
+  useEffect(() => { setC(config); setExText((config.excludeKeywords || []).join('，')) }, [config])
+  useEffect(() => { setC((p) => ({ ...p, excludeKeywords: exText.split(/[,，、\s]+/).map((x) => x.trim()).filter(Boolean) })) }, [exText])
   useEffect(() => {
     api<Room[]>('/api/group/rooms', { query: { dept: deptCode } }).then(setRooms).catch((e) => { Toast.error((e as Error).message); setRooms([]) })
   }, [deptCode])
@@ -100,14 +102,15 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
   const included = useMemo(() => {
     if (!rooms) return new Set<string>()
     if (c.roomFilterMode === 'manual') return new Set(c.selectedRooms)
-    return new Set(rooms.filter((r) => !r.internal && (!c.roomKeyword || r.roomName.includes(c.roomKeyword))).map((r) => r.roomId))
+    const ex = (c.excludeKeywords || []).filter(Boolean)
+    return new Set(rooms.filter((r) => !r.internal && (!c.roomKeyword || r.roomName.includes(c.roomKeyword)) && !ex.some((k) => r.roomName.includes(k))).map((r) => r.roomId))
   }, [rooms, c])
 
   const save = async (): Promise<void> => {
     setSaving(true)
     try {
       await api('/api/group/config', { method: 'PUT', body: c, query: { dept: deptCode } })
-      Toast.success('已保存，下次同步生效。想马上看效果点右上角「立即同步」')
+      Toast.success('已保存，下次同步生效（10 分钟内）；不算的群，以前分析出的问题会删掉')
       onSaved()
     } catch (e) {
       Toast.error((e as Error).message)
@@ -127,7 +130,13 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
           <Radio value="manual">只算下面勾选的群</Radio>
         </RadioGroup>
         {c.roomFilterMode === 'keyword' && (
-          <Input value={c.roomKeyword} onChange={(v) => setC({ ...c, roomKeyword: v })} placeholder="群名关键词，可以不填" style={{ width: 300, marginTop: 12 }} />
+          <>
+            <Input value={c.roomKeyword} onChange={(v) => setC({ ...c, roomKeyword: v })} placeholder="群名关键词，可以不填" style={{ width: 300, marginTop: 12 }} />
+            <div className="rule-row" style={{ marginTop: 12 }}>
+              <span>排除群名含这些字的群<em>多个用逗号隔开。渠道合作群「云雾API渠道」以后给渠道部单独做，这里不算；消息照样由归档服务采集</em></span>
+              <Input value={exText} onChange={setExText} placeholder="如：云雾API渠道" style={{ width: 300 }} />
+            </div>
+          </>
         )}
         <div className="rule-row" style={{ marginTop: 16 }}>
           <span>群聊停多久开始整理<em>一个群停下这么久没人说话，AI 就把这个群当天的聊天整理成群问题；之后又有人说话，停下来再重新整理（默认 30 分钟）</em></span>
@@ -150,7 +159,7 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
                   ? <input type="checkbox" checked={c.selectedRooms.includes(r.roomId)} onChange={(e) => toggle(r.roomId, e.target.checked)} />
                   : included.has(r.roomId) ? <span className="pill-tag success">算</span> : <span className="pill-tag muted">不算</span>
               },
-              { title: '群名', dataIndex: 'roomName', render: (v: string, r: Room) => <span>{v || r.roomId}{r.internal && <span className="form-hint" style={{ margin: '0 0 0 8px' }}>内部群</span>}</span> },
+              { title: '群名', dataIndex: 'roomName', render: (v: string, r: Room) => <span>{v || r.roomId}{r.internal && <span className="form-hint" style={{ margin: '0 0 0 8px' }}>内部群</span>}{!r.internal && r.excluded && <span className="form-hint" style={{ margin: '0 0 0 8px' }}>已排除</span>}</span> },
               { title: '人数', dataIndex: 'memberCount', width: 80 },
               { title: '消息数', dataIndex: 'msgTotal', width: 90 },
               { title: '最近消息', dataIndex: 'lastMsgAt', width: 150, render: (v: number) => fmtTime(v, '—') }

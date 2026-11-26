@@ -8,7 +8,7 @@ import { getDeptSetting, isSectionConfigured } from '../settings'
 import { deptProjectId } from '../members'
 import { archiveGet, fetchGroupMembers, fetchGroups, type ArchiveHealth } from '../services/archive'
 import { describeFetchError } from '../services/salesmartly'
-import { getGroupConfig, saveGroupConfig, type GroupConfig } from '../group/config'
+import { getGroupConfig, parseKeywords, saveGroupConfig, type GroupConfig } from '../group/config'
 import { GroupBusyError, groupProgress, startGroupSync } from '../group/sync'
 import { refreshIssueSessions } from '../issues/sessions'
 
@@ -72,6 +72,7 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
     const c: GroupConfig = {
       roomFilterMode: b.roomFilterMode === 'manual' ? 'manual' : 'keyword',
       roomKeyword: String(b.roomKeyword || '').trim().slice(0, 50),
+      excludeKeywords: parseKeywords(b.excludeKeywords),
       selectedRooms: Array.isArray(b.selectedRooms) ? b.selectedRooms.map(String).slice(0, 2000) : [],
       gapMin
     }
@@ -91,6 +92,7 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
     } catch (err) {
       throw new HttpError(502, `拉群列表失败：${describeFetchError(err)}`)
     }
+    const gc = await getGroupConfig(dept)
     const out = []
     for (const g of groups) {
       let internal = false
@@ -98,7 +100,9 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
         const ms = await fetchGroupMembers(cfg, g.room_id)
         internal = ms.length > 0 && ms.every((m) => m.is_staff === 1)
       } catch { /* 拉不到成员按非内部群 */ }
-      out.push({ roomId: g.room_id, roomName: g.room_name, memberCount: g.member_count, msgTotal: g.msg_total, lastMsgAt: g.last_msg_at, internal })
+      // 群名含排除关键词（按现在保存的设置）
+      const excluded = gc.roomFilterMode === 'keyword' && gc.excludeKeywords.some((k) => (g.room_name || '').includes(k))
+      out.push({ roomId: g.room_id, roomName: g.room_name, memberCount: g.member_count, msgTotal: g.msg_total, lastMsgAt: g.last_msg_at, internal, excluded })
     }
     return { success: true, data: out }
   })
