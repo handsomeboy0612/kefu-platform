@@ -55,8 +55,8 @@ export interface TechPart2 {
   score: number; base: number; bonus: number; praise: number; deduction: number; grade: string; coeff: number
   items: Record<'solved' | 'firstResp' | 'avgResp' | 'timeliness' | 'closure' | 'satisfaction', KpiItem>
   threadCnt: number; roomCnt: number; teamAvgCnt: number; avgFirstSec: number | null; avgReplySec: number | null
-  /** ai = 按群问题算；rule = 按规则群会话算（老快照没有这个字段，按 rule） */
-  source?: 'ai' | 'rule'
+  /** ai = 按群问题算；2026-11-26 以前生成的报表没有这个字段，是按时间切段算的 */
+  source?: 'ai'
   weightedCnt?: number; resolvedCnt?: number; unresolvedCnt?: number; handedCnt?: number; unknownCnt?: number; closureRate?: number | null; avgResolveSec?: number | null
 }
 

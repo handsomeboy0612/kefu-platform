@@ -1,5 +1,5 @@
 /**
- * 对公群设置（只有开了对公群的部门有）：哪些群算、切段间隔。存在 settings 表 dept:<code>:groupChat。
+ * 对公群设置（只有开了对公群的部门有）：哪些群算、群聊停多久开始 AI 整理（gapMin）。存在 settings 表 dept:<code>:groupChat。
  */
 import { execute, now, query } from '../db'
 import type { Department } from '../auth'

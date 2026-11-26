@@ -86,8 +86,6 @@ export interface TechRules {
     deduction: { complaint: number; unresolvedBad: number; violation: number; cap: number }
   }
   part2: {
-    /** ai = 按 AI 整理的群问题（一个问题算一个，有处理时效、闭环率）；rule = 按规则切的群会话（处理时效、闭环率不计分） */
-    source: 'ai' | 'rule'
     weights: { solved: number; firstResp: number; avgResp: number; timeliness: number; closure: number; satisfaction: number }
     solved: { dayEvening: VolumeCurve; night: VolumeCurve }
     firstRespTiers: ResponseTier[]
@@ -134,7 +132,6 @@ export const TECH_DEFAULT_RULES: TechRules = {
     deduction: { complaint: 5, unresolvedBad: 2, violation: 10, cap: 15 }
   },
   part2: {
-    source: 'ai',
     weights: { solved: 35, firstResp: 10, avgResp: 15, timeliness: 10, closure: 20, satisfaction: 10 },
     solved: {
       dayEvening: { avgPercent: 80, fullRatio: 1.3, floorAtAvg: false, bonusTiers: [{ ratio: 1.5, extra: 3 }, { ratio: 2, extra: 5 }] },
@@ -236,7 +233,6 @@ function mergeTech(raw: Obj): TechRules {
       deduction: { ...D.part1.deduction, ...(p1.deduction || {}) }
     },
     part2: {
-      source: p2.source === 'rule' || p2.source === 'ai' ? p2.source : D.part2.source,
       weights: { ...D.part2.weights, ...(p2.weights || {}) },
       solved: { dayEvening: curve(p2.solved?.dayEvening, D.part2.solved.dayEvening), night: curve(p2.solved?.night, D.part2.solved.night) },
       firstRespTiers: arr(p2.firstRespTiers, D.part2.firstRespTiers),

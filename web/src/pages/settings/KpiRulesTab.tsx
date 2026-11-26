@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Button, InputNumber, Input, Popconfirm, Select, Spin, Switch, Toast } from '@douyinfe/semi-ui'
+import { Button, InputNumber, Input, Popconfirm, Spin, Switch, Toast } from '@douyinfe/semi-ui'
 import { IconDelete, IconPlus } from '@douyinfe/semi-icons'
 import { api } from '../../api'
 import { useAuth } from '../../auth'
@@ -11,7 +11,6 @@ type Obj = Record<string, any>
 type Field =
   | { kind: 'num'; path: string; label: string; unit?: string; step?: number; hint?: string }
   | { kind: 'bool'; path: string; label: string; hint?: string }
-  | { kind: 'choice'; path: string; label: string; hint?: string; options: Array<{ value: string; label: string }> }
   | { kind: 'tiers'; path: string; label: string; hint?: string; cols: Array<{ key: string; label: string; unit?: string; text?: boolean; step?: number }> }
 
 interface Section { title: string; desc?: string; sum?: { paths: string[]; target: number | string }; fields: Field[] }
@@ -172,13 +171,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项（对公群技术售后）· 数据来源', desc: '对公群的聊天怎么拆成一件件来算分。「AI 整理的客户问题」（现在用的）：AI 读群聊，一个客户问题算一件，看谁实际处理、解决没有，主管可以在「群问题」里改；处理时效、闭环率都能算。「按时间切段（旧方法）」：群里停 30 分钟就切一段，谁先回复算谁的，分不清问题、看不出解决没有，处理时效和闭环率不计分；只在 AI 结果有问题时临时切回去用。',
-    fields: [
-      { kind: 'choice', path: 'part2.source', label: '第二项按什么算', options: [{ value: 'ai', label: 'AI 整理的客户问题' }, { value: 'rule', label: '按时间切段（旧方法）' }] }
-    ]
-  },
-  {
-    title: '第二项（对公群技术售后）· 各小项分值', desc: '合计 100。处理时效、问题闭环率只有按「AI 整理的客户问题」算时才有数据；切回旧方法时这两项不计分，按其余小项折算。',
+    title: '第二项（对公群技术售后）· 各小项分值', desc: '合计 100。对公群按 AI 整理的客户问题算：一个客户问题算一件，处理人、状态、难度按主管在「群问题」里改过的算。某小项没数据就不计分，按能考核的小项折算。',
     sum: { paths: ['part2.weights.solved', 'part2.weights.firstResp', 'part2.weights.avgResp', 'part2.weights.timeliness', 'part2.weights.closure', 'part2.weights.satisfaction'], target: 100 },
     fields: [
       { kind: 'num', path: 'part2.weights.solved', label: '解决问题数', unit: '分' },
@@ -205,7 +198,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项（对公群技术售后）· 处理时效', desc: '只在按 AI 群问题算时用，每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。3600 秒 = 1 小时。',
+    title: '第二项（对公群技术售后）· 处理时效', desc: '每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。3600 秒 = 1 小时。',
     fields: [
       { kind: 'num', path: 'part2.timeliness.fullSec', label: '多久内处理完得满分', unit: '秒' },
       { kind: 'num', path: 'part2.timeliness.syncSec', label: '超时后，每隔多久至少同步一次进度', unit: '秒' },
@@ -291,14 +284,6 @@ const KpiRulesTab: React.FC = () => {
         <div key={f.path} className="rule-row">
           <span>{f.label}{f.hint && <em>{f.hint}</em>}</span>
           <InputNumber value={get(rules, f.path)} step={f.step ?? 1} onChange={(v) => upd(f.path, v === '' ? 0 : Number(v))} suffix={f.unit} style={{ width: 140 }} />
-        </div>
-      )
-    }
-    if (f.kind === 'choice') {
-      return (
-        <div key={f.path} className="rule-row">
-          <span>{f.label}{f.hint && <em>{f.hint}</em>}</span>
-          <Select value={get(rules, f.path)} optionList={f.options} onChange={(v) => upd(f.path, v)} style={{ width: 200 }} />
         </div>
       )
     }

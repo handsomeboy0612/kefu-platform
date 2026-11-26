@@ -45,7 +45,7 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
     )
     const projectId = await deptProjectId(dept)
     const [cnt] = await query<{ n: number; last: number | null }>(
-      "SELECT COUNT(*) n, MAX(end_time) last FROM ss_sessions WHERE project_id = ? AND source = 'wgr'", [projectId]
+      "SELECT COUNT(*) n, MAX(end_time) last FROM ss_sessions WHERE project_id = ? AND source = 'wg'", [projectId]
     )
     return {
       success: true,
@@ -68,7 +68,7 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
     const dept = await groupDept(req)
     const b = (req.body || {}) as Partial<GroupConfig>
     const gapMin = Math.round(Number(b.gapMin))
-    if (!(gapMin >= 5 && gapMin <= 240)) throw new HttpError(400, '切段间隔要在 5~240 分钟之间')
+    if (!(gapMin >= 5 && gapMin <= 240)) throw new HttpError(400, '群聊停多久开始整理，要在 5~240 分钟之间')
     const c: GroupConfig = {
       roomFilterMode: b.roomFilterMode === 'manual' ? 'manual' : 'keyword',
       roomKeyword: String(b.roomKeyword || '').trim().slice(0, 50),

@@ -361,8 +361,7 @@ async function addColumn(table: string, column: string, ddl: string): Promise<vo
 
 export async function ensureSchema(): Promise<void> {
   for (const sql of SCHEMA) await execute(sql)
-  // 会话来源：ss = SaleSmartly；wg = 对公群里 AI 整理出的群问题（会话记录里看的，渠道号 -2）；
-  // wgr = 对公群按规则切的群会话（只给技术支持部第二项计分，不在会话记录里出现）
+  // 会话来源：ss = SaleSmartly；wg = 对公群里 AI 整理出的群问题（渠道号 -2）
   await addColumn('ss_sessions', 'source', "source VARCHAR(8) NOT NULL DEFAULT 'ss' AFTER session_id")
   await addColumn('ss_sessions', 'room_id', "room_id VARCHAR(128) NOT NULL DEFAULT '' AFTER source")
   // 群会话内容指纹：重复同步时内容没变就不重写消息
@@ -380,8 +379,11 @@ export async function ensureSchema(): Promise<void> {
   await addColumn('ss_sessions', 'issue_difficulty', 'issue_difficulty TINYINT NOT NULL DEFAULT 1 AFTER issue_sync_gap_sec')
   // 主管标的难度（NULL = 没标，按简单算）；状态加了「交接完整 handed / 交接不完整 handed_part」
   await addColumn('wg_issue_marks', 'difficulty', 'difficulty TINYINT NULL AFTER override_status')
-  // 以前按规则切的群会话存的是 wg，改成 wgr（会话 ID 都是 wg_ 开头；群问题是 wgi_ 开头）
-  await execute("UPDATE ss_sessions SET source = 'wgr' WHERE source = 'wg' AND session_id LIKE ?", ['wg\\_%'])
+  // 按时间切段的群会话（会话 ID wg_ 开头，source 是 wg 或 wgr；群问题是 wgi_ 开头）2026-11-26 弃用，删掉
+  const OLD = "s.source IN ('wg', 'wgr') AND s.session_id LIKE 'wg\\_%'"
+  await execute(`DELETE m FROM ss_messages m JOIN ss_sessions s ON s.project_id = m.project_id AND s.session_id = m.session_id WHERE ${OLD}`)
+  await execute(`DELETE sc FROM ai_scores sc JOIN ss_sessions s ON s.project_id = sc.project_id AND s.session_id = sc.session_id WHERE ${OLD}`)
+  await execute(`DELETE s FROM ss_sessions s WHERE ${OLD}`)
   // 同步结果的补充信息（对公群的挂靠提醒、采集中断等）
   await addColumn('sync_runs', 'detail', 'detail JSON NULL')
   // 早期建的这几张表没写排序规则，用了 MySQL 默认的 utf8mb4_0900_ai_ci，和会话表 JOIN 会报排序规则冲突

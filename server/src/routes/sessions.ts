@@ -156,7 +156,7 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     const channels = await query<{ channel: number }>(
       `SELECT DISTINCT s.channel FROM ss_sessions s
        JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-       WHERE s.project_id = ? AND s.source <> 'wgr' ORDER BY s.channel`,
+       WHERE s.project_id = ? ORDER BY s.channel`,
       [dept.id, projectId]
     )
     return {

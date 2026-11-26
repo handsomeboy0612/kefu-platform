@@ -37,12 +37,12 @@ export function parseFilter(q: Record<string, unknown>): SessionFilter {
   }
 }
 
-/** 公共 FROM：参数顺序是 [部门 id, 项目 id]。按规则切的群会话（wgr）只给绩效用，不在会话记录里出现 */
+/** 公共 FROM：参数顺序是 [部门 id, 项目 id] */
 export const SESSION_FROM = `
   FROM ss_sessions s
   JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
   LEFT JOIN ai_scores sc ON sc.project_id = s.project_id AND sc.session_id = s.session_id
-  WHERE s.project_id = ? AND s.source <> 'wgr'`
+  WHERE s.project_id = ?`
 
 export function filterSql(f: SessionFilter): { cond: string; params: unknown[] } {
   const where: string[] = []

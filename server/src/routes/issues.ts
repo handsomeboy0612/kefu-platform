@@ -106,7 +106,7 @@ function withAts(content: string, atList: unknown): string {
 const avg = (xs: number[]): number | null => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null)
 
 export async function issueRoutes(app: FastifyInstance): Promise<void> {
-  /** 问题列表 + 每人汇总（和规则群会话对比）+ 核对准确率 + 分析情况 */
+  /** 问题列表 + 每人汇总 + 核对准确率 + 分析情况 */
   app.get('/api/issues', async (req) => {
     const dept = await groupDept(req)
     const q = req.query as Record<string, string | undefined>
@@ -118,15 +118,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const mts = await metricsFor(rows, await metricsCtx())
     const all = rows.map((r) => view(r, staff, mts.get(r.id)))
 
-    // 每人汇总：只算本部门参与考核的处理人；其余（商务、客服等）合成一行
-    const projectId = await deptProjectId(dept)
-    const ruleRows = await query<{ sys_user_id: number; n: number }>(
-      `SELECT s.sys_user_id, COUNT(*) n FROM ss_sessions s JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-       WHERE s.project_id = ? AND s.source = 'wgr' AND s.start_time >= UNIX_TIMESTAMP(?) AND s.start_time < UNIX_TIMESTAMP(?) + 86400
-       GROUP BY s.sys_user_id`,
-      [dept.id, projectId, `${from} 00:00:00`, `${to} 00:00:00`]
-    )
-    const ruleBy = new Map(ruleRows.map((r) => [Number(r.sys_user_id), Number(r.n)]))
+    // 每人汇总：只算本部门参与考核的处理人；其余（商务、客服等）只计数
     const P = dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2 : null
     type Person = { name: string; sysUserId: number; issues: number; weighted: number; resolved: number; unresolved: number; handed: number; unknown: number; closure: number[]; first: number[]; resolve: number[] }
     const blank = (name: string, sysUserId: number): Person => ({ name, sysUserId, issues: 0, weighted: 0, resolved: 0, unresolved: 0, handed: 0, unknown: 0, closure: [], first: [], resolve: [] })
@@ -151,16 +143,12 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
       if (x.resolveSec != null) p.resolve.push(x.resolveSec as number)
       people.set(key, p)
     }
-    for (const [uid] of ruleBy) if (!people.has(String(uid))) {
-      const [m] = await query<{ nickname: string }>('SELECT nickname FROM members WHERE project_id = ? AND sys_user_id = ?', [projectId, uid])
-      people.set(String(uid), blank(m?.nickname || String(uid), uid))
-    }
     const summary = [...people.values()].map((p) => ({
       name: p.name, sysUserId: p.sysUserId, issues: p.issues, weighted: Math.round(p.weighted * 10) / 10,
       resolved: p.resolved, unresolved: p.unresolved, handed: p.handed, unknown: p.unknown,
       // 闭环率 = 各问题计分之和 ÷ 问题数（解决 1、交接完整 0.8、交接不完整 0.4、没解决 0；判断不了的确认前不算）
       closureRate: p.closure.length ? Math.round((p.closure.reduce((a, b) => a + b, 0) / p.closure.length) * 1000) / 10 : null,
-      avgFirstSec: avg(p.first), avgResolveSec: avg(p.resolve), ruleSessions: ruleBy.get(p.sysUserId) || 0
+      avgFirstSec: avg(p.first), avgResolveSec: avg(p.resolve)
     })).sort((a, b) => b.issues - a.issues)
 
     // 核对准确率：三项都核对过的问题里，三项全对的比例
@@ -205,7 +193,6 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
           lastAt: Math.max(0, ...runs.map((r) => Number(r.last || 0))),
           failures: failed
         },
-        kpiSource: dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2.source : 'rule',
         handlers: [...staff.values()].filter((s) => s.counted).map((s) => ({ sysUserId: s.sysUserId, name: s.member }))
           .filter((v, i, a) => a.findIndex((y) => y.sysUserId === v.sysUserId) === i)
       }

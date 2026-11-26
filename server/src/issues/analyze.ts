@@ -6,7 +6,7 @@
  * AI 判断：哪些消息是同一个问题、谁实际处理、解决没有（引用原话）。程序负责：校验、算时间、谁算数。
  * 稳定：一个群一天的输入（这天的消息 + 之前各天的结果 + 提示词版本 + 模型）没变就不重调 AI；
  *       某天要重跑时，先把这天及以后各天的改动按倒序撤回，再从这天往后重放（输入没变的直接用缓存结果）。
- * 失败（AI 报错、校验两次不过）：这个群当天没有 AI 结果，规则切的群会话照常，不影响同步。
+ * 失败（AI 报错、校验两次不过）：这个群当天没有 AI 结果（不算分），不影响同步；同样的输入失败 3 次后不再自动重试，可以在「群问题」里重新分析。
  */
 import { createHash } from 'crypto'
 import { execute, now, query, transaction } from '../db'
@@ -444,7 +444,7 @@ export async function startAnalyze(dept: Department, from: string, to: string, b
   )
   // 群名：从归档服务取；取不到就用群会话里存的名字
   const names = new Map((await query<{ room_id: string; name: string }>(
-    "SELECT room_id, MAX(customer_name) name FROM ss_sessions WHERE source IN ('wgr', 'wg') GROUP BY room_id"
+    "SELECT room_id, MAX(customer_name) name FROM ss_sessions WHERE source = 'wg' GROUP BY room_id"
   )).map((r) => [r.room_id, r.name]))
   try {
     for (const g of await fetchGroups(await getDeptSetting(dept.code, 'archive'))) if (g.room_name) names.set(g.room_id, g.room_name)

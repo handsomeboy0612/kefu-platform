@@ -9,7 +9,7 @@ interface GroupConfig { roomFilterMode: 'keyword' | 'manual'; roomKeyword: strin
 interface Run {
   id: number; trigger: string; triggeredBy: string; rangeBegin: number; rangeEnd: number; status: string
   startedAt: number; finishedAt: number; error: string | null
-  detail: { rooms: number; messages: number; sessions: number; skippedOpen: number; skippedNoOwner: number; removed: number; gaps: Array<{ agent_name: string; start: number; end: number; seconds: number }>; warnings: string[] } | null
+  detail: { rooms: number; messages: number; staff?: number; sessions?: number; gaps: Array<{ agent_name: string; start: number; end: number; seconds: number }>; warnings: string[] } | null
 }
 interface Status {
   archive: { configured: boolean; ok?: boolean; error?: string; msgTotal?: number; groups?: number; agents?: Array<{ name: string; lastUploadAt: number; online: boolean }> }
@@ -24,7 +24,7 @@ interface Room { roomId: string; roomName: string; memberCount: number; msgTotal
 
 const TECH_RE = /技术支持|技术组|研发|开发/
 
-const PHASE = { rooms: '筛选群', messages: '拉群消息', save: '切段、存群会话' } as Record<string, string>
+const PHASE = { rooms: '筛选群', messages: '拉群消息', save: '存消息、挂靠员工' } as Record<string, string>
 const day = (sec: number): string => fmtTime(sec).slice(0, 10)
 const dur = (sec: number): string => (sec >= 3600 ? `${Math.floor(sec / 3600)} 小时 ${Math.round((sec % 3600) / 60)} 分` : `${Math.round(sec / 60)} 分钟`)
 
@@ -78,7 +78,7 @@ const StaffTab: React.FC<{ deptCode: string }> = ({ deptCode }) => {
     <div className="panel">
       <div className="panel-desc">
         机器人上传的群消息里只有企业微信的昵称，要挂到 SaleSmartly 成员上才知道是谁。平台会按群昵称自动匹配（去掉「技术支持部-」这类前缀后同名优先，再按包含匹配）；
-        匹配错了或者没匹配上的，在这里手动指定。只有挂到本部门、勾了「参与考核」的人，回复才算进群会话。
+        匹配错了或者没匹配上的，在这里手动指定。只有挂到本部门、勾了「参与考核」的人，处理的群问题才计入考核。
       </div>
       <Input prefix={<IconSearch />} placeholder="搜员工昵称" value={kw} onChange={setKw} showClear style={{ width: 260, marginBottom: 12 }} />
       <Table rowKey="userId" size="middle" columns={columns} dataSource={list} pagination={list.length > 20 ? { pageSize: 20 } : false} />
@@ -86,7 +86,7 @@ const StaffTab: React.FC<{ deptCode: string }> = ({ deptCode }) => {
   )
 }
 
-/** 群筛选和切段间隔 */
+/** 群筛选、群聊停多久开始 AI 整理 */
 const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () => void }> = ({ deptCode, config, onSaved }) => {
   const [c, setC] = useState<GroupConfig>(config)
   const [rooms, setRooms] = useState<Room[] | null>(null)
@@ -130,7 +130,7 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
           <Input value={c.roomKeyword} onChange={(v) => setC({ ...c, roomKeyword: v })} placeholder="群名关键词，可以不填" style={{ width: 300, marginTop: 12 }} />
         )}
         <div className="rule-row" style={{ marginTop: 16 }}>
-          <span>切段间隔<em>同一个群里两条消息隔这么久，就算另一段对话（桌面版默认 30 分钟）</em></span>
+          <span>群聊停多久开始整理<em>一个群停下这么久没人说话，AI 就把这个群当天的聊天整理成群问题；之后又有人说话，停下来再重新整理（默认 30 分钟）</em></span>
           <InputNumber value={c.gapMin} min={5} max={240} suffix="分钟" onChange={(v) => setC({ ...c, gapMin: Number(v) || 30 })} style={{ width: 140 }} />
         </div>
         <div className="form-actions"><Button theme="solid" loading={saving} onClick={() => void save()}>保存</Button></div>
@@ -188,7 +188,7 @@ const RunsTab: React.FC<{ runs: Run[] }> = ({ runs }) => {
             {
               title: '内容', key: 'd',
               render: (_: unknown, r: Run) => r.error ? <span style={{ color: '#8E3420' }}>{r.error}</span> : r.detail
-                ? `${r.detail.rooms} 个群、${r.detail.messages} 条消息 → 群会话 ${r.detail.sessions} 个；还没聊完 ${r.detail.skippedOpen} 段（下次再存），没有考核人员回复 ${r.detail.skippedNoOwner} 段${r.detail.removed ? `，清掉旧的 ${r.detail.removed} 个` : ''}`
+                ? `${r.detail.rooms} 个群、${r.detail.messages} 条消息${r.detail.staff != null ? `，${r.detail.staff} 个员工在群里说过话` : ''}${r.detail.warnings?.length ? `；提醒 ${r.detail.warnings.length} 条` : ''}`
                 : '—'
             }
           ]} />
@@ -197,7 +197,7 @@ const RunsTab: React.FC<{ runs: Run[] }> = ({ runs }) => {
   )
 }
 
-/** 设置 → 对公群：归档服务状态、立即同步、员工挂靠、群筛选与切段、同步记录（只有开了对公群的部门有） */
+/** 设置 → 对公群：归档服务状态、立即同步、员工挂靠、群筛选、同步记录（只有开了对公群的部门有） */
 const GroupSettingsTab: React.FC = () => {
   const { dept } = useAuth()
   const [status, setStatus] = useState<Status | null>(null)
@@ -254,8 +254,8 @@ const GroupSettingsTab: React.FC = () => {
         </div>
         <div className="panel-desc" style={{ marginBottom: 0 }}>
           群消息来自企业微信机器人，每 10 分钟自动同步；群聊停下 30 分钟后由 AI 整理成「群问题」，挂到处理人名下（「会话记录」里按来源「对公群」查看）。
-          技术支持部第二项（对公群）按群问题计分；旧方法「按时间切段」的群会话留作对照（考核规则里可以切回）。
-          {status && <> 按时间切段的群会话 {status.sessionTotal} 个；最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}；</>}
+          技术支持部第二项（对公群）按群问题计分。
+          {status && <> 计入考核的群问题 {status.sessionTotal} 个；最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}；</>}
           {a?.configured === false ? '还没配群聊归档服务。' : a?.ok === false ? `归档服务连不上：${a.error}` : (a?.agents || []).map((g) => `采集端 ${g.name}${g.online ? '在线' : '离线'}`).join('、')}
           {status?.progress && <span className="pill-tag" style={{ marginLeft: 8 }}>正在同步 · {PHASE[status.progress.phase] || ''}{status.progress.total ? ` ${status.progress.done}/${status.progress.total}` : ''}</span>}
         </div>
@@ -266,7 +266,7 @@ const GroupSettingsTab: React.FC = () => {
 
       <Tabs type="button" activeKey={tab} onChange={setTab} keepDOM={false}>
         <TabPane tab="员工挂靠" itemKey="staff"><div style={{ paddingTop: 16 }}><StaffTab deptCode={dept.code} /></div></TabPane>
-        <TabPane tab="群筛选与切段" itemKey="config">
+        <TabPane tab="群筛选" itemKey="config">
           <div style={{ paddingTop: 16 }}>{status ? <ConfigTab deptCode={dept.code} config={status.config} onSaved={load} /> : <Spin />}</div>
         </TabPane>
         <TabPane tab="同步记录" itemKey="runs"><div style={{ paddingTop: 16 }}><RunsTab runs={status?.runs || []} /></div></TabPane>
@@ -274,7 +274,7 @@ const GroupSettingsTab: React.FC = () => {
 
       <Modal title="同步对公群" visible={syncOpen} onCancel={() => setSyncOpen(false)} onOk={() => void start()} okText="开始同步" confirmLoading={starting}>
         <div className="stack" style={{ gap: 12, paddingBottom: 8 }}>
-          <div className="notice" style={{ marginTop: 0 }}>平时每 10 分钟会自动同步，不用手动点。改了员工挂靠或群筛选，想马上看效果，就选时间段重新同步（会按新设置重新切段、挂人）。</div>
+          <div className="notice" style={{ marginTop: 0 }}>平时每 10 分钟会自动同步，不用手动点。改了群筛选，想马上把以前的群消息补进来，就选时间段重新同步；改了员工挂靠不用重新同步，群问题会马上挂到新的人名下。</div>
           <DatePicker type="dateRange" value={range ?? undefined} style={{ width: 280 }}
             disabledDate={(d) => !!d && d.getTime() > Date.now()}
             onChange={(v) => setRange(Array.isArray(v) && v[0] && v[1] ? [v[0] as Date, v[1] as Date] : null)} />

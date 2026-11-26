@@ -3,8 +3,8 @@
  * 总 KPI = 第一项·客服接待 × part1Weight% + 第二项·对公群技术售后 × part2Weight% + 主管评分。
  * 某一小项没数据就不计分，大项得分 = 实际得分 ÷ 能考核小项的满分合计 × 100；加分扣分在折算后统一加减。
  *
- * 第二项（对公群）：按《技术支持部绩效考核标准》第三部分，默认按 AI 整理的群问题算（处理人、状态、难度按主管改过的），
- * 考核规则里可以切回按规则切的群会话（处理时效、闭环率没有数据，不计分）。没有对公群数据的人第二项不考核，总 KPI 按第一项折算。
+ * 第二项（对公群）：按《技术支持部绩效考核标准》第三部分，按 AI 整理的群问题算（处理人、状态、难度按主管改过的）。
+ * 没有对公群问题的人第二项不考核，总 KPI 按第一项折算。
  */
 import type { GradeRule, ManualEntry, RateCurve, ResponseTier, TechRules, VolumeCurve } from './rules'
 import type { KpiInputs } from './inputs'
@@ -53,8 +53,8 @@ export interface TechPart2 {
   grade: string
   coeff: number
   items: { solved: KpiItem; firstResp: KpiItem; avgResp: KpiItem; timeliness: KpiItem; closure: KpiItem; satisfaction: KpiItem }
-  /** ai = 按群问题算；rule = 按规则群会话算 */
-  source: 'ai' | 'rule'
+  /** 'ai' = 按群问题算（2026-11-26 以前生成的报表可能没有这个字段，是按时间切段算的） */
+  source: 'ai'
   threadCnt: number
   roomCnt: number
   teamAvgCnt: number
@@ -300,8 +300,7 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
   const P = R.part2
   const w = P.weights
   const threadCnt = wg.threads.length
-  const isAi = P.source === 'ai'
-  const weightedCnt = isAi ? wg.threads.reduce((s, t) => s + difficultyWeight(P, t.difficulty), 0) : threadCnt
+  const weightedCnt = wg.threads.reduce((s, t) => s + difficultyWeight(P, t.difficulty), 0)
   const vol = volumePct(weightedCnt, teamAvg, isNight ? P.solved.night : P.solved.dayEvening)
   const solved: KpiItem = { full: w.solved, score: (vol.pct / 100) * w.solved }
 
@@ -313,18 +312,17 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
   const ap = meanPct(avgs, P.avgRespTiers)
   const firstResp: KpiItem = { full: w.firstResp, score: fp === null ? null : (fp / 100) * w.firstResp }
   const avgResp: KpiItem = { full: w.avgResp, score: ap === null ? null : (ap / 100) * w.avgResp }
-  // 处理时效、问题闭环率：只有按 AI 群问题算时才有数据；按规则群会话算时不计分
-  const cnt = (s: string): number => (isAi ? wg.threads.filter((t) => t.status === s).length : 0)
+  const cnt = (s: string): number => wg.threads.filter((t) => t.status === s).length
   const resolvedCnt = cnt('resolved')
   const unresolvedCnt = cnt('unresolved')
   const handedCnt = cnt('handed') + cnt('handed_part')
-  const unknownCnt = isAi ? threadCnt - resolvedCnt - unresolvedCnt - handedCnt : 0
-  const tps = isAi ? wg.threads.map((t) => timelinessPct(P, t)).filter((x): x is number => x !== null) : []
+  const unknownCnt = threadCnt - resolvedCnt - unresolvedCnt - handedCnt
+  const tps = wg.threads.map((t) => timelinessPct(P, t)).filter((x): x is number => x !== null)
   const timeliness: KpiItem = { full: w.timeliness, score: tps.length ? (tps.reduce((a, b) => a + b, 0) / tps.length / 100) * w.timeliness : null }
-  const cvs = isAi ? wg.threads.map((t) => closureValue(P, t.status)).filter((x): x is number => x !== null) : []
+  const cvs = wg.threads.map((t) => closureValue(P, t.status)).filter((x): x is number => x !== null)
   const closureRate = cvs.length ? (cvs.reduce((a, b) => a + b, 0) / cvs.length) * 100 : null
   const closure: KpiItem = { full: w.closure, score: closureRate === null ? null : (closurePct(closureRate, P.closureRule.points) / 100) * w.closure }
-  const resolveSecs = isAi ? wg.threads.filter((t) => t.status === 'resolved').map((t) => t.resolveSec).filter((s): s is number => s != null) : []
+  const resolveSecs = wg.threads.filter((t) => t.status === 'resolved').map((t) => t.resolveSec).filter((s): s is number => s != null)
 
   const S = P.satisfaction
   const complaints = m.p2Complaints || 0
@@ -345,7 +343,7 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
   return {
     score, base: r1(base), bonus: vol.bonus, praise, deduction, grade: g.grade, coeff: g.coeff,
     items: { solved: roundItem(solved), firstResp: roundItem(firstResp), avgResp: roundItem(avgResp), timeliness: roundItem(timeliness), closure: roundItem(closure), satisfaction: roundItem(satisfaction) },
-    source: P.source, threadCnt, roomCnt: wg.roomCnt, teamAvgCnt: r1(teamAvg), avgFirstSec: mean(firsts), avgReplySec: mean(avgs),
+    source: 'ai', threadCnt, roomCnt: wg.roomCnt, teamAvgCnt: r1(teamAvg), avgFirstSec: mean(firsts), avgReplySec: mean(avgs),
     weightedCnt: r1(weightedCnt), resolvedCnt, unresolvedCnt, handedCnt, unknownCnt, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
   }
 }
@@ -369,10 +367,8 @@ export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, Manu
   const p1Rows = rows.filter((r) => (r.start_session_pv || 0) > 0)
   const p2Rows = rows.filter((r) => groupCnt(r.sys_user_id) > 0)
   const teamAvg1 = teamAverage(p1Rows.map((r) => [d.shiftOf(r.sys_user_id), r.start_session_pv || 0]))
-  // 团队平均：按 AI 群问题算时用难度加权后的问题数
-  const weighted = (uid: number): number => R.part2.source === 'ai'
-    ? (group[String(uid)]?.threads || []).reduce((s, t) => s + difficultyWeight(R.part2, t.difficulty), 0)
-    : groupCnt(uid)
+  // 团队平均：用难度加权后的问题数
+  const weighted = (uid: number): number => (group[String(uid)]?.threads || []).reduce((s, t) => s + difficultyWeight(R.part2, t.difficulty), 0)
   const teamAvg2 = teamAverage(p2Rows.map((r) => [d.shiftOf(r.sys_user_id), weighted(r.sys_user_id)]))
   const ts = p1Rows.map(starOf).reduce((a, s) => ({ sum: a.sum + s.sum, cnt: a.cnt + s.cnt }), { sum: 0, cnt: 0 })
   const teamStar = ts.cnt > 0 ? ts.sum / ts.cnt : null
