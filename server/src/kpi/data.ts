@@ -3,6 +3,7 @@
  * - 回复率本地口径、出勤天数、差评剔除：按「分配时间（没有就用开始时间）」落在时段内的会话
  * - AI 质检：按会话时间和时段有重叠的已评分会话
  */
+import type { GroupStats } from './calc-tech'
 import { query } from '../db'
 
 /** 预筛：分配时间一定不早于开始时间，按开始时间先圈一个范围走索引（往前多放 7 天） */
@@ -102,10 +103,31 @@ export async function coverage(projectId: string, deptId: number, begin: number,
 }
 
 /**
+ * 对公群（技术支持部第二项，按 AI 群问题算）：每人处理的群问题（处理人按主管改过的），问题按客户第一条提问的时间算在哪天。
+ * 首响 / 均响 / 处理时长在把群问题写进会话记录时已经算好（issues/sessions.ts）。
+ */
+export async function issueStats(projectId: string, deptId: number, begin: number, end: number): Promise<GroupStats> {
+  const rows = await query<{ sys_user_id: number; room_id: string; nickname: string; issue_status: string; issue_first_sec: number | null; issue_avg_sec: number | null; issue_resolve_sec: number | null }>(
+    `SELECT s.sys_user_id, s.room_id, m.nickname, s.issue_status, s.issue_first_sec, s.issue_avg_sec, s.issue_resolve_sec FROM ss_sessions s
+     JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
+     WHERE s.project_id = ? AND s.source = 'wg' AND s.assign_time BETWEEN ? AND ?`,
+    [deptId, projectId, begin, end]
+  )
+  const acc: Record<string, { name: string; rooms: Set<string>; threads: GroupStats[string]['threads'] }> = {}
+  const n = (v: number | null): number | null => (v == null ? null : Number(v))
+  for (const r of rows) {
+    const a = (acc[String(r.sys_user_id)] ||= { name: r.nickname, rooms: new Set(), threads: [] })
+    a.rooms.add(r.room_id)
+    a.threads.push({ firstSec: n(r.issue_first_sec), avgSec: n(r.issue_avg_sec), status: r.issue_status || 'unknown', resolveSec: n(r.issue_resolve_sec) })
+  }
+  return Object.fromEntries(Object.entries(acc).map(([k, v]) => [k, { name: v.name, roomCnt: v.rooms.size, threads: v.threads }]))
+}
+
+/**
  * 对公群（技术支持部第二项）：按规则切的群会话（source = 'wgr'，核对准确率达标后改成按 AI 群问题）。每人接手的群会话、涉及的群数，以及每个群会话的首响 / 均响（秒）。
  * 等待从客户发言算起（客户连着发、间隔不超过 60 秒的算一轮，从这一轮最后一句算）到客服回复；派单等系统消息不算。
  */
-export async function groupStats(projectId: string, deptId: number, begin: number, end: number): Promise<Record<string, { name: string; roomCnt: number; threads: Array<{ firstSec: number | null; avgSec: number | null }> }>> {
+export async function groupStats(projectId: string, deptId: number, begin: number, end: number): Promise<GroupStats> {
   const sessions = await query<{ session_id: string; sys_user_id: number; room_id: string; nickname: string }>(
     `SELECT s.session_id, s.sys_user_id, s.room_id, m.nickname FROM ss_sessions s
      JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?

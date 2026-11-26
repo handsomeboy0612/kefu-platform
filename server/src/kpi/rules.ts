@@ -86,10 +86,16 @@ export interface TechRules {
     deduction: { complaint: number; unresolvedBad: number; violation: number; cap: number }
   }
   part2: {
+    /** ai = 按 AI 整理的群问题（一个问题算一个，有处理时效、闭环率）；rule = 按规则切的群会话（处理时效、闭环率不计分） */
+    source: 'ai' | 'rule'
     weights: { solved: number; firstResp: number; avgResp: number; timeliness: number; closure: number; satisfaction: number }
     solved: { dayEvening: VolumeCurve; night: VolumeCurve }
     firstRespTiers: ResponseTier[]
     avgRespTiers: ResponseTier[]
+    /** 处理时效：客户第一条提问 → 解决那条消息，每个已解决的问题单独打分再平均 */
+    timelinessTiers: ResponseTier[]
+    /** 问题闭环率 = 已解决 ÷（已解决 + 未解决），判断不了的不算 */
+    closureCurve: RateCurve
     satisfaction: { complaint: number; mild: number; praise: number; praiseCap: number }
     deduction: { ignored1h: number; ignored2h: number; handoverMiss: number; wrongInfo: number; violation: number; cap: number }
   }
@@ -120,6 +126,7 @@ export const TECH_DEFAULT_RULES: TechRules = {
     deduction: { complaint: 5, unresolvedBad: 2, violation: 10, cap: 15 }
   },
   part2: {
+    source: 'ai',
     weights: { solved: 35, firstResp: 10, avgResp: 15, timeliness: 10, closure: 20, satisfaction: 10 },
     solved: {
       dayEvening: { avgPercent: 80, fullRatio: 1.3, floorAtAvg: false, bonusTiers: [{ ratio: 1.5, extra: 3 }, { ratio: 2, extra: 5 }] },
@@ -133,6 +140,11 @@ export const TECH_DEFAULT_RULES: TechRules = {
       { maxSec: 90, percent: 100 }, { maxSec: 150, percent: 85 }, { maxSec: 210, percent: 70 },
       { maxSec: 300, percent: 50 }, { maxSec: 480, percent: 25 }
     ],
+    timelinessTiers: [
+      { maxSec: 1800, percent: 100 }, { maxSec: 3600, percent: 85 }, { maxSec: 7200, percent: 70 },
+      { maxSec: 14400, percent: 50 }, { maxSec: 28800, percent: 25 }
+    ],
+    closureCurve: { full: 90, mid: 70, midPercent: 60, zero: 40 },
     satisfaction: { complaint: 5, mild: 2, praise: 1, praiseCap: 3 },
     deduction: { ignored1h: 3, ignored2h: 5, handoverMiss: 3, wrongInfo: 10, violation: 10, cap: 15 }
   },
@@ -215,10 +227,13 @@ function mergeTech(raw: Obj): TechRules {
       deduction: { ...D.part1.deduction, ...(p1.deduction || {}) }
     },
     part2: {
+      source: p2.source === 'rule' || p2.source === 'ai' ? p2.source : D.part2.source,
       weights: { ...D.part2.weights, ...(p2.weights || {}) },
       solved: { dayEvening: curve(p2.solved?.dayEvening, D.part2.solved.dayEvening), night: curve(p2.solved?.night, D.part2.solved.night) },
       firstRespTiers: arr(p2.firstRespTiers, D.part2.firstRespTiers),
       avgRespTiers: arr(p2.avgRespTiers, D.part2.avgRespTiers),
+      timelinessTiers: arr(p2.timelinessTiers, D.part2.timelinessTiers),
+      closureCurve: { ...D.part2.closureCurve, ...(p2.closureCurve || {}) },
       satisfaction: { ...D.part2.satisfaction, ...(p2.satisfaction || {}) },
       deduction: { ...D.part2.deduction, ...(p2.deduction || {}) }
     },

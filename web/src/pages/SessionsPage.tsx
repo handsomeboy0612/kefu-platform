@@ -7,7 +7,7 @@ import PageHeader from '../components/PageHeader'
 import SessionDrawer, { GradePill, Stars, type AIScore } from '../components/SessionDrawer'
 import SyncModal, { SyncProgressLine, useSyncStatus } from '../components/SyncModal'
 import BatchScoreModal, { BatchProgress, useBatchJob } from '../components/BatchScore'
-import { IssueDrawer, StatusPill } from './IssuesPage'
+import { IssueDrawer, ScoreParts, StatusPill } from './IssuesPage'
 import { channelName, fmtDuration, GRADES, scoreColor } from '../constants'
 import { copyText, fmtTime } from '../utils'
 
@@ -34,6 +34,9 @@ export interface SessionItem {
   issueId?: number
   issueStatus?: string
   issueSummary?: string
+  /** 单题分（技术支持部第二项规则）和组成 */
+  issueScore?: number | null
+  issueParts?: Record<string, number | null>
 }
 
 interface ListResp {
@@ -210,7 +213,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
     {
       title: '渠道', dataIndex: 'channel', width: 110,
       render: (v: number, r: SessionItem) => r.source === 'wg'
-        ? <Tooltip content="对公群里的一个客户问题：AI 把群聊按问题整理好，看谁实际处理的、解决没有（群聊停下 30 分钟后整理，今天的还可能变）。"><span><span className="pill-tag muted">企微群</span><div className="kpi-cell-sub">AI 整理</div></span></Tooltip>
+        ? <Tooltip content="对公群里的一个客户问题：AI 把群聊按问题整理好，看谁实际处理的、解决没有（群聊停下 30 分钟后整理，今天的还可能变）。分数是单题分，按第二项规则算，计入技术支持部绩效第二项。"><span><span className="pill-tag muted">企微群</span><div className="kpi-cell-sub">AI 整理</div></span></Tooltip>
         : <span className="pill-tag muted">{channelName(v)}</span>
     },
     {
@@ -226,7 +229,16 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
     {
       title: 'AI 质检', key: 'ai', width: 150,
       render: (_: unknown, r: SessionItem) => {
-        if (r.source === 'wg') return <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}><StatusPill s={r.issueStatus || 'unknown'} /></span>
+        if (r.source === 'wg') {
+          return (
+            <Tooltip content={<ScoreParts parts={r.issueParts} />}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                {r.issueScore != null && <b style={{ color: scoreColor(r.issueScore), fontSize: 15 }}>{r.issueScore.toFixed(1)}</b>}
+                <StatusPill s={r.issueStatus || 'unknown'} />
+              </span>
+            </Tooltip>
+          )
+        }
         if (scoringIds.has(r.sessionId)) return <span className="form-hint" style={{ margin: 0 }}><Spin size="small" /> 评分中</span>
         if (r.scoreStatus === 'ok' && r.aiTotal != null) {
           return (

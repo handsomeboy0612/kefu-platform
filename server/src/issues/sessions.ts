@@ -1,13 +1,15 @@
 /**
  * 会话记录里的对公群 = AI 整理出的群问题：一个问题一行（source = 'wg'，渠道 -2），挂在处理人名下。
  * - 处理人按主管改过的算；只挂本部门成员处理的问题（商务等处理的、没人处理的只在「群问题」里看）
- * - 按规则切的群会话（source = 'wgr'）只在后台给技术支持部第二项计分，不在会话记录里出现；核对准确率达标、计分改成按 AI 后去掉
+ * - 按规则切的群会话（source = 'wgr'）留作对照，不在会话记录里出现；考核规则里可以切回按它给第二项计分
  * 群问题有变化（分析完、主管改了处理人 / 状态、员工挂靠变了）就对一遍；内容指纹没变的不动。
+ * 同时按处理人算好首次响应 / 平均响应 / 处理时长，绩效第二项和会话记录里的单题分直接用。
  */
 import { createHash } from 'crypto'
 import { execute, now, query } from '../db'
 import { listDepartments, type Department } from '../auth'
 import { deptProjectId } from '../members'
+import { getGroupConfig } from '../group/config'
 
 const WG_CHANNEL = -2
 const json = <T>(v: unknown, d: T): T => (v == null ? d : typeof v === 'string' ? (JSON.parse(v) as T) : (v as T))
@@ -18,7 +20,69 @@ export const issueSessionId = (deptId: number, roomId: string, anchor: string): 
 
 interface Row {
   id: number; room_id: string; room_name: string; anchor_msg_id: string; summary: string; message_ids: unknown
-  handler_user_id: string; status: string; first_customer_at: number; override_handler: string | null; override_status: string | null
+  handler_user_id: string; status: string; first_customer_at: number; resolved_at: number; override_handler: string | null; override_status: string | null
+}
+
+export interface IssueMsg { msg_id: string; sender_id: string; is_staff: number; is_self: number; at_list: unknown; send_time: number }
+export interface IssueMetrics { firstCustomerAt: number; firstSec: number | null; avgSec: number | null; resolveSec: number | null; start: number; end: number; customerCnt: number; staffCnt: number }
+
+/** 算时间要用的：认识的员工（判断「只 @ 同事的派单」）、切段间隔 */
+export interface MetricsCtx { staffIds: Set<string>; gapSec: number }
+
+/**
+ * 按处理人算一个群问题的时间。口径和规则群会话一致：问题里停了超过切段间隔（默认 30 分钟）就算新的一段对话，
+ * 只算处理人参与的对话段——处理人被拉进来之前客户等的时间（商务先接着、前一天的消息等）不算在他头上；
+ * 一直没人回的提问也不算等待（晾着客户按人工录入扣分）。
+ * - 平均响应：客户每一轮提问（连着发、间隔不超过 60 秒的算一轮）→ 同一段里处理人的下一次回应（含「稍等」；只 @ 同事的派单不算），取平均
+ * - 首次响应：上面的第一轮
+ * - 处理时效：处理人接手（他回应的第一轮提问）→ 解决那条消息（只算已解决的）
+ */
+export function issueMetrics(msgs: IssueMsg[], handler: string, ctx: MetricsCtx, status: string, resolvedAt: number): IssueMetrics {
+  const { staffIds, gapSec } = ctx
+  const sorted = [...msgs].sort((a, b) => Number(a.send_time) - Number(b.send_time))
+  const isCustomer = (m: IssueMsg): boolean => !m.is_staff && !m.is_self
+  const isReply = (m: IssueMsg): boolean => {
+    if (!handler || m.sender_id !== handler) return false
+    const ats = json<Array<{ user_id: string }>>(m.at_list, []).map((a) => a.user_id).filter(Boolean)
+    return !(ats.length > 0 && ats.every((id) => staffIds.has(id)))
+  }
+  const fc = sorted.find(isCustomer)
+  const firstCustomerAt = fc ? Number(fc.send_time) : 0
+  const waits: number[] = []
+  let engagedAt = 0
+  let pending: number[] = []
+  let prevAt = 0
+  for (const m of sorted) {
+    const at = Number(m.send_time)
+    // 停了超过切段间隔：新的一段对话，之前没人回的提问不再算等待
+    if (prevAt && at - prevAt > gapSec) pending = []
+    prevAt = at
+    if (isCustomer(m)) pending.push(at)
+    else if (pending.length && isReply(m)) {
+      let start = pending[0]
+      for (let i = 1; i < pending.length && pending[i] - pending[i - 1] <= 60; i++) start = pending[i]
+      waits.push(Math.max(0, at - start))
+      if (!engagedAt) engagedAt = start
+      pending = []
+    }
+  }
+  const times = sorted.map((m) => Number(m.send_time))
+  const from = engagedAt || firstCustomerAt
+  return {
+    firstCustomerAt,
+    firstSec: waits.length ? waits[0] : null,
+    avgSec: waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : null,
+    resolveSec: status === 'resolved' && resolvedAt && from ? Math.max(0, Number(resolvedAt) - from) : null,
+    start: times.length ? times[0] : firstCustomerAt,
+    end: times.length ? times[times.length - 1] : firstCustomerAt,
+    customerCnt: sorted.filter(isCustomer).length,
+    staffCnt: sorted.filter((m) => m.is_staff && !m.is_self).length
+  }
+}
+
+export async function metricsCtx(dept: Department): Promise<MetricsCtx> {
+  const staffIds = new Set((await query<{ user_id: string }>('SELECT user_id FROM wg_staff')).map((r) => r.user_id))
+  return { staffIds, gapSec: (await getGroupConfig(dept)).gapMin * 60 }
 }
 
 async function refresh(dept: Department): Promise<{ upserted: number; removed: number }> {
@@ -26,7 +90,7 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
   if (!dept.groupChat || !projectId) return { upserted: 0, removed: 0 }
   const issues = await query<Row>(
     `SELECT i.id, i.room_id, i.room_name, i.anchor_msg_id, i.summary, i.message_ids, i.handler_user_id, i.status, i.first_customer_at,
-            k.override_handler, k.override_status
+            i.resolved_at, k.override_handler, k.override_status
      FROM wg_issues i
      LEFT JOIN wg_issue_marks k ON k.department_id = i.department_id AND k.room_id = i.room_id AND k.anchor_msg_id = i.anchor_msg_id
      WHERE i.department_id = ?`,
@@ -40,16 +104,17 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
     [projectId, dept.id]
   )
   const memberOf = new Map(staff.map((s) => [s.user_id, Number(s.sys_user_id)]))
+  const ctx = await metricsCtx(dept)
 
-  const want = new Map<string, { r: Row; sysUserId: number; status: string; msgIds: string[]; sig: string }>()
+  const want = new Map<string, { r: Row; handler: string; sysUserId: number; status: string; msgIds: string[]; sig: string }>()
   for (const r of issues) {
     const handler = r.override_handler !== null && r.override_handler !== undefined ? r.override_handler : r.handler_user_id
     const sysUserId = handler ? memberOf.get(handler) || 0 : 0
     if (!sysUserId) continue
     const status = r.override_status || r.status
     const msgIds = json<string[]>(r.message_ids, [])
-    const sig = sha(JSON.stringify([r.id, sysUserId, status, r.summary, r.room_name, msgIds, Number(r.first_customer_at)]))
-    want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, sysUserId, status, msgIds, sig })
+    const sig = sha(JSON.stringify(['m2', ctx.gapSec, r.id, handler, sysUserId, status, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
+    want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, handler, sysUserId, status, msgIds, sig })
   }
 
   const have = await query<{ session_id: string; content_sig: string }>(
@@ -66,34 +131,35 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
 
   const changed = [...want.entries()].filter(([id, w]) => haveSig.get(id) !== w.sig)
   if (changed.length) {
-    // 消息条数、起止时间从原始群消息算
+    // 消息条数、起止时间、首响 / 均响 / 处理时长从原始群消息算
     const allIds = [...new Set(changed.flatMap(([, w]) => w.msgIds))]
-    const info = new Map<string, { staff: boolean; self: boolean; at: number }>()
+    const info = new Map<string, IssueMsg>()
     for (let i = 0; i < allIds.length; i += 1000) {
-      const rows = await query<{ msg_id: string; is_staff: number; is_self: number; send_time: number }>(
-        'SELECT msg_id, is_staff, is_self, send_time FROM wg_messages WHERE msg_id IN (?)', [allIds.slice(i, i + 1000)]
+      const rows = await query<IssueMsg>(
+        'SELECT msg_id, sender_id, is_staff, is_self, at_list, send_time FROM wg_messages WHERE msg_id IN (?)', [allIds.slice(i, i + 1000)]
       )
-      for (const m of rows) info.set(m.msg_id, { staff: !!m.is_staff, self: !!m.is_self, at: Number(m.send_time) })
+      for (const m of rows) info.set(m.msg_id, m)
     }
     const t = now()
     const values = changed.map(([id, w]) => {
-      const ms = w.msgIds.map((x) => info.get(x)).filter((x): x is { staff: boolean; self: boolean; at: number } => !!x)
-      const times = ms.map((m) => m.at)
-      const first = Number(w.r.first_customer_at) || 0
-      const start = times.length ? Math.min(...times) : first
-      const end = times.length ? Math.max(...times) : first
-      return [projectId, id, 'wg', w.r.room_id.slice(0, 128), w.sig, w.r.id, w.status, (w.r.summary || '').slice(0, 255), '',
-        (w.r.room_name || w.r.room_id).slice(0, 255), w.sysUserId, WG_CHANNEL, 0, start, end, first || start, 0, 0, '',
-        ms.length, ms.filter((m) => !m.staff && !m.self).length, ms.filter((m) => m.staff && !m.self).length, 1, 0, t]
+      const ms = w.msgIds.map((x) => info.get(x)).filter((x): x is IssueMsg => !!x)
+      const x = issueMetrics(ms, w.handler, ctx, w.status, Number(w.r.resolved_at))
+      const first = x.firstCustomerAt || Number(w.r.first_customer_at) || 0
+      return [projectId, id, 'wg', w.r.room_id.slice(0, 128), w.sig, w.r.id, w.status, (w.r.summary || '').slice(0, 255),
+        x.firstSec, x.avgSec, x.resolveSec, '',
+        (w.r.room_name || w.r.room_id).slice(0, 255), w.sysUserId, WG_CHANNEL, 0, x.start || first, x.end || first, first || x.start, 0, 0, '',
+        ms.length, x.customerCnt, x.staffCnt, 1, 0, t]
     })
     for (let i = 0; i < values.length; i += 300) {
       await execute(
-        `INSERT INTO ss_sessions (project_id, session_id, source, room_id, content_sig, issue_id, issue_status, issue_summary, chat_user_id,
+        `INSERT INTO ss_sessions (project_id, session_id, source, room_id, content_sig, issue_id, issue_status, issue_summary,
+           issue_first_sec, issue_avg_sec, issue_resolve_sec, chat_user_id,
            customer_name, sys_user_id, channel, channel_id, start_time, end_time, assign_time, star_score, quality_score, tags,
            msg_count, user_msg_count, kf_msg_count, msgs_synced, msg_fail, synced_at)
          VALUES ?
          ON DUPLICATE KEY UPDATE content_sig = VALUES(content_sig), issue_id = VALUES(issue_id), issue_status = VALUES(issue_status),
-           issue_summary = VALUES(issue_summary), customer_name = VALUES(customer_name), sys_user_id = VALUES(sys_user_id),
+           issue_summary = VALUES(issue_summary), issue_first_sec = VALUES(issue_first_sec), issue_avg_sec = VALUES(issue_avg_sec),
+           issue_resolve_sec = VALUES(issue_resolve_sec), customer_name = VALUES(customer_name), sys_user_id = VALUES(sys_user_id),
            start_time = VALUES(start_time), end_time = VALUES(end_time), assign_time = VALUES(assign_time), msg_count = VALUES(msg_count),
            user_msg_count = VALUES(user_msg_count), kf_msg_count = VALUES(kf_msg_count), synced_at = VALUES(synced_at)`,
         [values.slice(i, i + 300)]

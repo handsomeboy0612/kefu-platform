@@ -371,6 +371,10 @@ export async function ensureSchema(): Promise<void> {
   await addColumn('ss_sessions', 'issue_id', "issue_id BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER content_sig")
   await addColumn('ss_sessions', 'issue_status', "issue_status VARCHAR(12) NOT NULL DEFAULT '' AFTER issue_id")
   await addColumn('ss_sessions', 'issue_summary', "issue_summary VARCHAR(255) NOT NULL DEFAULT '' AFTER issue_status")
+  // 群问题的首次响应 / 平均响应 / 处理时长（秒，按处理人算；没有就是 NULL），绩效第二项和单题分用
+  await addColumn('ss_sessions', 'issue_first_sec', 'issue_first_sec INT NULL AFTER issue_summary')
+  await addColumn('ss_sessions', 'issue_avg_sec', 'issue_avg_sec INT NULL AFTER issue_first_sec')
+  await addColumn('ss_sessions', 'issue_resolve_sec', 'issue_resolve_sec INT NULL AFTER issue_avg_sec')
   // 以前按规则切的群会话存的是 wg，改成 wgr（会话 ID 都是 wg_ 开头；群问题是 wgi_ 开头）
   await execute("UPDATE ss_sessions SET source = 'wgr' WHERE source = 'wg' AND session_id LIKE ?", ['wg\\_%'])
   // 同步结果的补充信息（对公群的挂靠提醒、采集中断等）

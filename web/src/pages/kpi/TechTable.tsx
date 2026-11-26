@@ -64,14 +64,20 @@ const TechTable: React.FC<{
       }
     },
     {
-      title: `第二项 · 对公群 ${T.part2Weight}%`, key: 'p2', width: 260,
+      title: `第二项 · 对公群 ${T.part2Weight}%`, key: 'p2', width: 300,
       render: (_: unknown, r: TechResult) => {
         const p = r.p2
-        if (!p) return <span className="form-hint" style={{ margin: 0 }}>对公群数据还没接入，不考核（总分按第一项折算）</span>
+        if (!p) return <span className="form-hint" style={{ margin: 0 }}>本期没有处理对公群问题，不考核（总分按第一项折算）</span>
         return (
           <div className="kpi-part">
             <div className="kpi-part-head"><b className="kpi-total" style={{ fontSize: 18 }}>{p.score}</b><KpiGrade grade={p.grade} coeff={p.coeff} /></div>
-            <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}）· 首响 {fmtSec(p.avgFirstSec)}</div>
+            {p.source === 'ai'
+              ? <div className="kpi-cell-sub">
+                  群问题 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}）· 首响 {fmtSec(p.avgFirstSec)} 均响 {fmtSec(p.avgReplySec)}<br />
+                  解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
+                  {p.avgResolveSec != null ? ` · 平均处理 ${fmtSec(p.avgResolveSec)}` : ''}
+                </div>
+              : <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}，按规则切段）· 首响 {fmtSec(p.avgFirstSec)}</div>}
             <Items items={p.items} names={P2_NAMES} />
           </div>
         )

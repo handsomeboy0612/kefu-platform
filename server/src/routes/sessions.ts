@@ -11,6 +11,8 @@ import { describeFetchError, SalesmartlyClient } from '../services/salesmartly'
 import { fetchSessionMessages } from '../sync/salesmartly-sync'
 import { filterSql, parseFilter, SESSION_FROM } from '../sessions-filter'
 import { getScore, scoreView } from '../ai/service'
+import { getRules, type TechRules } from '../kpi/rules'
+import { issueScore } from '../kpi/calc-tech'
 
 interface SessionDbRow {
   session_id: string
@@ -37,6 +39,9 @@ interface SessionDbRow {
   issue_id: number
   issue_status: string
   issue_summary: string
+  issue_first_sec: number | null
+  issue_avg_sec: number | null
+  issue_resolve_sec: number | null
 }
 
 const toView = (r: SessionDbRow): Record<string, unknown> => ({
@@ -65,13 +70,28 @@ const toView = (r: SessionDbRow): Record<string, unknown> => ({
   /** 对公群（source = 'wg'）：AI 整理的群问题编号、状态（按主管改过的）、摘要 */
   issueId: Number(r.issue_id || 0),
   issueStatus: r.issue_status || '',
-  issueSummary: r.issue_summary || ''
+  issueSummary: r.issue_summary || '',
+  issueFirstSec: r.issue_first_sec == null ? null : Number(r.issue_first_sec),
+  issueAvgSec: r.issue_avg_sec == null ? null : Number(r.issue_avg_sec),
+  issueResolveSec: r.issue_resolve_sec == null ? null : Number(r.issue_resolve_sec)
 })
+
+/** 对公群问题的单题分（技术支持部第二项规则；别的部门没有） */
+async function withIssueScore(dept: Department, list: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> {
+  if (dept.kpiTemplate !== 'tech' || !list.some((x) => x.source === 'wg')) return list
+  const P = ((await getRules(dept)).rules as TechRules).part2
+  return list.map((x) => {
+    if (x.source !== 'wg') return x
+    const s = issueScore(P, { firstSec: x.issueFirstSec as number | null, avgSec: x.issueAvgSec as number | null, status: String(x.issueStatus || ''), resolveSec: x.issueResolveSec as number | null })
+    return { ...x, issueScore: s.score, issueParts: s.parts }
+  })
+}
 
 const SELECT = `
   SELECT s.session_id, s.source, s.chat_user_id, s.customer_name, s.sys_user_id, s.channel, s.start_time, s.end_time, s.assign_time,
          s.star_score, s.msg_count, s.user_msg_count, s.kf_msg_count, s.msgs_synced, m.nickname, m.participate, m.active,
-         sc.status sc_status, sc.total_score sc_total, sc.grade sc_grade, sc.reviewed sc_reviewed, s.issue_id, s.issue_status, s.issue_summary`
+         sc.status sc_status, sc.total_score sc_total, sc.grade sc_grade, sc.reviewed sc_reviewed, s.issue_id, s.issue_status, s.issue_summary,
+         s.issue_first_sec, s.issue_avg_sec, s.issue_resolve_sec`
 
 export async function deptScope(req: FastifyRequest): Promise<{ dept: Department; projectId: string }> {
   const dept = await resolveDepartment(req, (req.query as { dept?: string }).dept)
@@ -103,7 +123,7 @@ export async function sessionRoutes(app: FastifyInstance): Promise<void> {
     return {
       success: true,
       data: {
-        list: rows.map(toView),
+        list: await withIssueScore(dept, rows.map(toView)),
         total: Number(cnt?.total || 0),
         page,
         pageSize,

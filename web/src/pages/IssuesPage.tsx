@@ -5,6 +5,7 @@ import { api } from '../api'
 import { useAuth } from '../auth'
 import PageHeader from '../components/PageHeader'
 import { fmtTime } from '../utils'
+import { scoreColor } from '../constants'
 
 interface Review { boundaryOk: number | null; handlerOk: number | null; statusOk: number | null; note: string; by: string }
 interface Issue {
@@ -19,9 +20,11 @@ interface ListResp {
   accuracy: { reviewed: number; allOk: number; boundaryOk: number; handlerOk: number; statusOk: number }
   analysis: { progress: { rooms: number; roomsDone: number; calls: number; failed: number } | null; ok: number; failed: number; tokens: number; lastAt: number; failures: Array<{ room_id: string; day: string; error: string }> }
   handlers: Array<{ sysUserId: number; name: string }>
+  /** 技术支持部第二项现在按什么算：ai = 群问题，rule = 规则群会话 */
+  kpiSource: 'ai' | 'rule'
 }
 interface Detail {
-  issue: Issue & { helpers: string[]; resolvedMsgId: string }
+  issue: Issue & { helpers: string[]; resolvedMsgId: string; avgReplySec: number | null; score: number | null; scoreParts: Record<string, number | null> | null }
   messages: Array<{ id: string; senderType: string; senderName: string; content: string; sendTime: number; isResolved: boolean }>
   handlerOptions: Array<{ userId: string; name: string; counted: boolean }>
 }
@@ -35,6 +38,16 @@ const hms = (t: number): string => fmtTime(t).slice(5)
 
 export const StatusPill: React.FC<{ s: string; overridden?: boolean }> = ({ s, overridden }) => (
   <span className={`pill-tag ${STATUS_CLASS[s] || 'muted'}`}>{STATUS_TEXT[s] || s}{overridden ? ' · 改过' : ''}</span>
+)
+
+const PART_NAMES: Record<string, string> = { firstResp: '首次响应', avgResp: '平均响应', timeliness: '处理时效', closure: '是否解决' }
+/** 单题分的组成：第二项里能按单个问题算的几项，各自得该项分值的百分之几 */
+export const ScoreParts: React.FC<{ parts: Record<string, number | null> | null | undefined }> = ({ parts }) => (
+  <div style={{ lineHeight: 1.8 }}>
+    <div>单题分 = 下面几项按「考核规则 → 第二项」的分值加权平均</div>
+    {Object.entries(parts || {}).map(([k, v]) => <div key={k}>{PART_NAMES[k] || k}：{v == null ? '不算' : `${Math.round(v)}%`}</div>)}
+    <div style={{ opacity: 0.75 }}>人的第二项还要看解决问题数、闭环率、满意度和扣分</div>
+  </div>
 )
 
 /** 三项核对：对 / 不对 / 没核对 */
@@ -101,7 +114,14 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
               <div><span>处理人</span><b>{i.handlerName || '没人处理'}{i.handlerName && !i.counted && <em>（不计入）</em>}</b></div>
               <div><span>状态</span><b><StatusPill s={i.status} overridden={i.overridden} /></b></div>
               <div><span>首响</span><b>{sec(i.firstReplySec)}</b></div>
+              <div><span>平均响应</span><b>{sec(i.avgReplySec)}</b></div>
               <div><span>处理时效</span><b>{sec(i.resolveSec)}</b></div>
+              <div>
+                <span>单题分</span>
+                <Tooltip content={<ScoreParts parts={i.scoreParts} />}>
+                  <b style={{ color: i.score == null ? undefined : scoreColor(i.score) }}>{i.score == null ? '—' : i.score}</b>
+                </Tooltip>
+              </div>
               {i.helpers.length > 0 && <div style={{ gridColumn: '1 / -1' }}><span>协助</span><b>{i.helpers.join('、')}</b></div>}
               <div style={{ gridColumn: '1 / -1' }}><span>归属理由</span><b style={{ fontWeight: 400 }}>{i.handlerReason || '—'}</b></div>
               {i.evidence && <div style={{ gridColumn: '1 / -1' }}><span>依据原话</span><b style={{ fontWeight: 400 }}>「{i.evidence}」</b></div>}
@@ -229,7 +249,7 @@ const IssuesPage: React.FC = () => {
   const personCols = [
     { title: '处理人', dataIndex: 'name' },
     { title: 'AI 识别的问题', dataIndex: 'issues', width: 120 },
-    { title: '规则群会话（现在计分用的）', dataIndex: 'ruleSessions', width: 190 },
+    { title: data?.kpiSource === 'rule' ? '规则群会话（现在计分用的）' : '规则群会话（对照）', dataIndex: 'ruleSessions', width: 170 },
     { title: '已解决', dataIndex: 'resolved', width: 80 },
     { title: '未解决', dataIndex: 'unresolved', width: 80 },
     { title: '判断不了', dataIndex: 'unknown', width: 90 },
@@ -261,7 +281,10 @@ const IssuesPage: React.FC = () => {
 
       <div className={`notice ${pct !== null && pct >= 90 && (acc?.reviewed || 0) >= 30 ? 'success' : ''}`} style={{ marginTop: 0 }}>
         <b>核对进度</b>：已核对 {acc?.reviewed || 0} 个问题{pct !== null ? `，三项全对 ${acc?.allOk} 个，准确率 ${pct}%（边界 ${acc?.boundaryOk}、处理人 ${acc?.handlerOk}、是否解决 ${acc?.statusOk} 个对）` : ''}。
-        约定：核对满 30 个、准确率到 90%，再把技术支持部第二项改成按 AI 结果计分。点问题打开，看聊天记录，三项各点「对 / 不对」；今天的问题还可能变，建议核对前一天及以前的。
+        {data?.kpiSource === 'rule'
+          ? '技术支持部第二项现在按规则群会话计分（设置 → 考核规则里可以改成按群问题）。'
+          : '技术支持部第二项按这里的群问题计分（处理人、状态按主管改过的算；设置 → 考核规则里可以切回规则群会话）。AI 会出错，建议主管每周抽查。'}
+        点问题打开，看聊天记录，三项各点「对 / 不对」，判断错的直接改处理人或状态；今天的问题还可能变，建议核对前一天及以前的。
       </div>
 
       <div className="panel filter-panel">

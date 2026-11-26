@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { Button, InputNumber, Input, Popconfirm, Spin, Switch, Toast } from '@douyinfe/semi-ui'
+import { Button, InputNumber, Input, Popconfirm, Select, Spin, Switch, Toast } from '@douyinfe/semi-ui'
 import { IconDelete, IconPlus } from '@douyinfe/semi-icons'
 import { api } from '../../api'
 import { useAuth } from '../../auth'
@@ -11,6 +11,7 @@ type Obj = Record<string, any>
 type Field =
   | { kind: 'num'; path: string; label: string; unit?: string; step?: number; hint?: string }
   | { kind: 'bool'; path: string; label: string; hint?: string }
+  | { kind: 'choice'; path: string; label: string; hint?: string; options: Array<{ value: string; label: string }> }
   | { kind: 'tiers'; path: string; label: string; hint?: string; cols: Array<{ key: string; label: string; unit?: string; text?: boolean; step?: number }> }
 
 interface Section { title: string; desc?: string; sum?: { paths: string[]; target: number | string }; fields: Field[] }
@@ -170,7 +171,13 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项 · 各小项分值', desc: '合计 100。处理时效、问题闭环率要等问题登记（二期 AI 分问题）上线才有数据，现在不计分。',
+    title: '第二项 · 数据来源', desc: '按 AI 群问题：一个客户问题算一个，处理人、状态按主管在「群问题」里改过的算，处理时效和问题闭环率都有数据。按规则群会话：隔 30 分钟切一段、谁先回复算谁，处理时效和闭环率没有数据、不计分。',
+    fields: [
+      { kind: 'choice', path: 'part2.source', label: '第二项按什么算', options: [{ value: 'ai', label: 'AI 群问题' }, { value: 'rule', label: '规则群会话' }] }
+    ]
+  },
+  {
+    title: '第二项 · 各小项分值', desc: '合计 100。处理时效、问题闭环率只有按 AI 群问题算时才有数据；按规则群会话算时这两项不计分，按其余小项折算。',
     sum: { paths: ['part2.weights.solved', 'part2.weights.firstResp', 'part2.weights.avgResp', 'part2.weights.timeliness', 'part2.weights.closure', 'part2.weights.satisfaction'], target: 100 },
     fields: [
       { kind: 'num', path: 'part2.weights.solved', label: '解决问题数', unit: '分' },
@@ -183,10 +190,20 @@ const TECH_SCHEMA: Section[] = [
   },
   { title: '第二项 · 解决问题数', fields: [...volume('part2.solved.dayEvening', '白班 / 晚班'), ...volume('part2.solved.night', '通宵班')] },
   {
-    title: '第二项 · 响应速度', desc: '每个群会话单独打分，最后取平均。',
+    title: '第二项 · 响应速度', desc: '每个群问题（或群会话）单独打分，最后取平均。平均响应 = 客户每轮提问到处理人回应（含「稍等」，派单不算）的平均，首次响应是其中第一轮。群里停了 30 分钟以上算新的一段对话，只算处理人参与的对话段：他被拉进来之前客户等的时间不算在他头上，一直没人回的提问也不算（晾着客户按人工录入扣分）。',
     fields: [
       { kind: 'tiers', path: 'part2.firstRespTiers', label: '首次响应阶梯', cols: RESP_TIER },
       { kind: 'tiers', path: 'part2.avgRespTiers', label: '平均响应阶梯', cols: RESP_TIER }
+    ]
+  },
+  {
+    title: '第二项 · 处理时效和问题闭环率', desc: '只在按 AI 群问题算时用。处理时效 = 处理人接手（他回应的第一轮客户提问）到解决那条消息，每个已解决的问题单独打分再平均（1800 秒 = 30 分钟，3600 秒 = 1 小时）。闭环率 = 已解决 ÷（已解决 + 未解决），判断不了的不算。',
+    fields: [
+      { kind: 'tiers', path: 'part2.timelinessTiers', label: '处理时效阶梯（超过最后一档得 0）', cols: RESP_TIER },
+      { kind: 'num', path: 'part2.closureCurve.full', label: '闭环率满分线', unit: '%' },
+      { kind: 'num', path: 'part2.closureCurve.mid', label: '闭环率中间线', unit: '%' },
+      { kind: 'num', path: 'part2.closureCurve.midPercent', label: '中间线得', unit: '%' },
+      { kind: 'num', path: 'part2.closureCurve.zero', label: '闭环率零分线', unit: '%' }
     ]
   },
   {
@@ -260,6 +277,14 @@ const KpiRulesTab: React.FC = () => {
         <div key={f.path} className="rule-row">
           <span>{f.label}{f.hint && <em>{f.hint}</em>}</span>
           <InputNumber value={get(rules, f.path)} step={f.step ?? 1} onChange={(v) => upd(f.path, v === '' ? 0 : Number(v))} suffix={f.unit} style={{ width: 140 }} />
+        </div>
+      )
+    }
+    if (f.kind === 'choice') {
+      return (
+        <div key={f.path} className="rule-row">
+          <span>{f.label}{f.hint && <em>{f.hint}</em>}</span>
+          <Select value={get(rules, f.path)} optionList={f.options} onChange={(v) => upd(f.path, v)} style={{ width: 200 }} />
         </div>
       )
     }

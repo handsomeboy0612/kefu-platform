@@ -40,10 +40,10 @@ function exportCsv(report: KpiReport, deptName: string): void {
       pct(r.replyRate), r.replyScore, r.avgStar < 0 ? '' : r.avgStar, r.scoredCnt, r.satisfyScore, r.avgResponseSec, r.avgReplySec, r.responseScore,
       r.aiAvgScore ?? '', r.aiScoredCount, r.aiComponent, r.finalScore, r.grade, r.coeff])
   } else {
-    head = ['排名', '客服', '班次', '第一项', '第一项等级', '接待量', '星级均分', '回复率', 'AI均分', '第二项', '第二项等级', '群会话', '主管评分', '主管评语', '总KPI', '卓越之星']
+    head = ['排名', '客服', '班次', '第一项', '第一项等级', '接待量', '星级均分', '回复率', 'AI均分', '第二项', '第二项等级', '群问题数', '闭环率', '主管评分', '主管评语', '总KPI', '卓越之星']
     rows = (report.results as TechResult[]).map((r, i) => [i + 1, r.name, r.shiftLabel, r.p1?.score ?? '', r.p1?.grade ?? '', r.p1?.sessionCnt ?? '',
       r.p1 && r.p1.avgStar >= 0 ? r.p1.avgStar : '', r.p1 ? pct(r.p1.replyRate) : '', r.p1?.aiAvgScore ?? '', r.p2?.score ?? '', r.p2?.grade ?? '',
-      r.p2?.threadCnt ?? '', r.supervisorScore, r.supervisorNote, r.finalScore, r.star ? '是' : ''])
+      r.p2?.threadCnt ?? '', r.p2?.closureRate == null ? '' : `${r.p2.closureRate}%`, r.supervisorScore, r.supervisorNote, r.finalScore, r.star ? '是' : ''])
   }
   const csv = '﻿' + [head, ...rows].map((r) => r.map(esc).join(',')).join('\r\n')
   const a = document.createElement('a')

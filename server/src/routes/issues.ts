@@ -6,7 +6,9 @@ import { audit, HttpError, resolveDepartment, type Department } from '../auth'
 import { execute, now, query } from '../db'
 import { deptProjectId } from '../members'
 import { AnalyzeBusyError, analyzeProgress, startAnalyze } from '../issues/analyze'
-import { refreshIssueSessions } from '../issues/sessions'
+import { issueMetrics, metricsCtx, refreshIssueSessions, type IssueMsg, type IssueMetrics, type MetricsCtx } from '../issues/sessions'
+import { getRules, type TechRules } from '../kpi/rules'
+import { issueScore } from '../kpi/calc-tech'
 
 interface IssueRow {
   id: number; room_id: string; room_name: string; day: string; anchor_msg_id: string; summary: string
@@ -41,8 +43,23 @@ async function staffIndex(dept: Department): Promise<Map<string, { nick: string;
   }]))
 }
 
-function view(r: IssueRow, staff: Awaited<ReturnType<typeof staffIndex>>): Record<string, unknown> {
-  const handler = r.override_handler !== null && r.override_handler !== undefined ? r.override_handler : r.handler_user_id
+const effHandler = (r: IssueRow): string => (r.override_handler !== null && r.override_handler !== undefined ? r.override_handler : r.handler_user_id)
+
+/** 按现在的处理人、状态算每个问题的首响 / 均响 / 处理时效（和绩效第二项、会话记录同一个口径） */
+async function metricsFor(rows: IssueRow[], ctx: MetricsCtx): Promise<Map<number, IssueMetrics>> {
+  const ids = [...new Set(rows.flatMap((r) => json<string[]>(r.message_ids, [])))]
+  const msgs = new Map<string, IssueMsg>()
+  for (let i = 0; i < ids.length; i += 1000) {
+    for (const m of await query<IssueMsg>('SELECT msg_id, sender_id, is_staff, is_self, at_list, send_time FROM wg_messages WHERE msg_id IN (?)', [ids.slice(i, i + 1000)])) msgs.set(m.msg_id, m)
+  }
+  return new Map(rows.map((r) => [r.id, issueMetrics(
+    json<string[]>(r.message_ids, []).map((id) => msgs.get(id)).filter((m): m is IssueMsg => !!m),
+    effHandler(r), ctx, r.override_status || r.status, Number(r.resolved_at)
+  )]))
+}
+
+function view(r: IssueRow, staff: Awaited<ReturnType<typeof staffIndex>>, mt?: IssueMetrics): Record<string, unknown> {
+  const handler = effHandler(r)
   const st = staff.get(handler)
   const status = r.override_status || r.status
   return {
@@ -62,8 +79,9 @@ function view(r: IssueRow, staff: Awaited<ReturnType<typeof staffIndex>>): Recor
     overridden: (r.override_handler !== null && r.override_handler !== undefined) || !!r.override_status,
     evidence: r.evidence || '',
     firstCustomerAt: Number(r.first_customer_at),
-    firstReplySec: r.first_reply_at && r.first_customer_at ? Math.max(0, Number(r.first_reply_at) - Number(r.first_customer_at)) : null,
-    resolveSec: r.resolved_at && r.first_customer_at && status === 'resolved' ? Math.max(0, Number(r.resolved_at) - Number(r.first_customer_at)) : null,
+    firstReplySec: mt ? mt.firstSec : r.first_reply_at && r.first_customer_at ? Math.max(0, Number(r.first_reply_at) - Number(r.first_customer_at)) : null,
+    avgReplySec: mt ? mt.avgSec : null,
+    resolveSec: mt ? mt.resolveSec : r.resolved_at && r.first_customer_at && status === 'resolved' ? Math.max(0, Number(r.resolved_at) - Number(r.first_customer_at)) : null,
     review: r.boundary_ok === null && r.handler_ok === null && r.status_ok === null ? null
       : { boundaryOk: r.boundary_ok, handlerOk: r.handler_ok, statusOk: r.status_ok, note: r.note || '', by: r.mark_by || '' }
   }
@@ -86,7 +104,8 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) throw new HttpError(400, '请选择日期')
     const staff = await staffIndex(dept)
     const rows = await query<IssueRow>(`${SELECT} WHERE i.department_id = ? AND i.day BETWEEN ? AND ? ORDER BY i.day DESC, i.first_customer_at DESC, i.id DESC`, [dept.id, from, to])
-    const all = rows.map((r) => view(r, staff))
+    const mts = await metricsFor(rows, await metricsCtx(dept))
+    const all = rows.map((r) => view(r, staff, mts.get(r.id)))
 
     // 每人汇总：只算本部门参与考核的处理人；其余（商务、客服等）合成一行
     const projectId = await deptProjectId(dept)
@@ -166,6 +185,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
           lastAt: Math.max(0, ...runs.map((r) => Number(r.last || 0))),
           failures: failed
         },
+        kpiSource: dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2.source : 'rule',
         handlers: [...staff.values()].filter((s) => s.counted).map((s) => ({ sysUserId: s.sysUserId, name: s.member }))
           .filter((v, i, a) => a.findIndex((y) => y.sysUserId === v.sysUserId) === i)
       }
@@ -180,9 +200,14 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     if (!r) throw new HttpError(404, '问题不存在')
     const staff = await staffIndex(dept)
     const ids = json<string[]>(r.message_ids, [])
-    const msgs = ids.length ? await query<{ msg_id: string; sender_id: string; sender_name: string; is_staff: number; is_self: number; content: string; send_time: number }>(
-      'SELECT msg_id, sender_id, sender_name, is_staff, is_self, content, send_time FROM wg_messages WHERE msg_id IN (?) ORDER BY send_time, msg_id', [ids]
+    const msgs = ids.length ? await query<{ msg_id: string; sender_id: string; sender_name: string; is_staff: number; is_self: number; at_list: unknown; content: string; send_time: number }>(
+      'SELECT msg_id, sender_id, sender_name, is_staff, is_self, at_list, content, send_time FROM wg_messages WHERE msg_id IN (?) ORDER BY send_time, msg_id', [ids]
     ) : []
+    // 按现在的处理人（主管改过的优先）算首响 / 均响 / 处理时长和单题分（第二项规则）
+    const mt = issueMetrics(msgs, effHandler(r), await metricsCtx(dept), r.override_status || r.status, Number(r.resolved_at))
+    const v = view(r, staff, mt)
+    const P = dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2 : null
+    const sc = P ? issueScore(P, { firstSec: mt.firstSec, avgSec: mt.avgSec, status: String(v.status), resolveSec: mt.resolveSec }) : null
     const helpers = json<string[]>(r.helper_ids, []).map((h) => staff.get(h)?.nick || h)
     const speakers = [...new Set(msgs.filter((m) => m.is_staff && !m.is_self).map((m) => m.sender_id))]
     const options = [...new Set([...speakers, ...[...staff.entries()].filter(([, s]) => s.counted).map(([k]) => k)])]
@@ -190,7 +215,10 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     return {
       success: true,
       data: {
-        issue: { ...view(r, staff), helpers, resolvedMsgId: r.resolved_msg_id },
+        issue: {
+          ...v, helpers, resolvedMsgId: r.resolved_msg_id,
+          score: sc?.score ?? null, scoreParts: sc?.parts ?? null
+        },
         messages: msgs.map((m) => ({
           id: m.msg_id,
           senderType: m.is_self ? 'bot' : m.is_staff ? 'staff' : 'customer',
