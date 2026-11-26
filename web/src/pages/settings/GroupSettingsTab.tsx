@@ -254,8 +254,8 @@ const GroupSettingsTab: React.FC = () => {
         </div>
         <div className="panel-desc" style={{ marginBottom: 0 }}>
           群消息来自企业微信机器人，每 10 分钟自动同步；群聊停下 30 分钟后由 AI 整理成「群问题」，挂到处理人名下（「会话记录」里按来源「对公群」查看）。
-          技术支持部第二项按群问题计分；按规则切的「群会话」留作对照（考核规则里可以切回按它计分）。
-          {status && <> 规则群会话 {status.sessionTotal} 个；最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}；</>}
+          技术支持部第二项（对公群）按群问题计分；旧方法「按时间切段」的群会话留作对照（考核规则里可以切回）。
+          {status && <> 按时间切段的群会话 {status.sessionTotal} 个；最近同步 {lastOk ? fmtTime(lastOk.finishedAt) : '—'}；</>}
           {a?.configured === false ? '还没配群聊归档服务。' : a?.ok === false ? `归档服务连不上：${a.error}` : (a?.agents || []).map((g) => `采集端 ${g.name}${g.online ? '在线' : '离线'}`).join('、')}
           {status?.progress && <span className="pill-tag" style={{ marginLeft: 8 }}>正在同步 · {PHASE[status.progress.phase] || ''}{status.progress.total ? ` ${status.progress.done}/${status.progress.total}` : ''}</span>}
         </div>

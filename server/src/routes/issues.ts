@@ -95,6 +95,14 @@ const SELECT = `
   FROM wg_issues i
   LEFT JOIN wg_issue_marks k ON k.department_id = i.department_id AND k.room_id = i.room_id AND k.anchor_msg_id = i.anchor_msg_id`
 
+/** 机器人存消息时把「@某某」从正文里去掉了（只存在 at_list 里），显示时补回到前面；只 @ 人的消息正文是空的 */
+function withAts(content: string, atList: unknown): string {
+  const ats = json<Array<{ user_id?: string; nickname?: string }>>(atList, []).map((a) => a.nickname || a.user_id || '').filter(Boolean)
+  const body = (content || '').trim()
+  const prefix = ats.map((n) => `@${n}`).join(' ')
+  return [prefix, body].filter(Boolean).join(' ') || '[消息]'
+}
+
 const avg = (xs: number[]): number | null => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : null)
 
 export async function issueRoutes(app: FastifyInstance): Promise<void> {
@@ -235,7 +243,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
           id: m.msg_id,
           senderType: m.is_self ? 'bot' : m.is_staff ? 'staff' : 'customer',
           senderName: m.is_staff ? staff.get(m.sender_id)?.nick || m.sender_name : m.sender_name,
-          content: m.content,
+          content: withAts(m.content, m.at_list),
           sendTime: Number(m.send_time),
           isResolved: m.msg_id === r.resolved_msg_id
         })),

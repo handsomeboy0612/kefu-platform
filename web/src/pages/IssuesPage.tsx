@@ -261,7 +261,7 @@ const IssuesPage: React.FC = () => {
   const personCols = [
     { title: '处理人', dataIndex: 'name' },
     { title: 'AI 识别的问题', dataIndex: 'issues', width: 120, render: (v: number, p: Person) => (p.weighted !== v ? <span>{v}<span className="kpi-cell-sub">（加权 {p.weighted}）</span></span> : v) },
-    { title: data?.kpiSource === 'rule' ? '规则群会话（现在计分用的）' : '规则群会话（对照）', dataIndex: 'ruleSessions', width: 170 },
+    { title: data?.kpiSource === 'rule' ? '按时间切段（现在计分用的）' : '按时间切段（旧方法，对照）', dataIndex: 'ruleSessions', width: 170 },
     { title: '已解决', dataIndex: 'resolved', width: 80 },
     { title: '未解决', dataIndex: 'unresolved', width: 80 },
     { title: '交接', dataIndex: 'handed', width: 70 },
@@ -277,7 +277,7 @@ const IssuesPage: React.FC = () => {
         title="群问题"
         desc="AI 把对公群的聊天按「客户问题」整理出来：谁实际处理的、解决没有、依据哪句原话。首响、处理时效由程序按消息时间算。"
         scope={dept.name}
-        scopeHint={`${data?.kpiSource === 'rule' ? '第二项现在按规则群会话计分' : '计入技术支持部第二项'} · 每 10 分钟同步群消息，一个群聊天停下 30 分钟就自动分析（当天也分析）`}
+        scopeHint={`${data?.kpiSource === 'rule' ? '第二项现在按旧方法（按时间切段）计分' : '计入技术支持部第二项（对公群）'} · 每 10 分钟同步群消息，一个群聊天停下 30 分钟就自动分析（当天也分析）`}
         extra={
           <>
             {data?.analysis.progress
@@ -295,8 +295,8 @@ const IssuesPage: React.FC = () => {
       <div className={`notice ${pct !== null && pct >= 90 && (acc?.reviewed || 0) >= 30 ? 'success' : ''}`} style={{ marginTop: 0 }}>
         <b>核对进度</b>：已核对 {acc?.reviewed || 0} 个问题{pct !== null ? `，三项全对 ${acc?.allOk} 个，准确率 ${pct}%（边界 ${acc?.boundaryOk}、处理人 ${acc?.handlerOk}、是否解决 ${acc?.statusOk} 个对）` : ''}。
         {data?.kpiSource === 'rule'
-          ? '技术支持部第二项现在按规则群会话计分（设置 → 考核规则里可以改成按群问题）。'
-          : '技术支持部第二项按这里的群问题计分（处理人、状态按主管改过的算；设置 → 考核规则里可以切回规则群会话）。AI 会出错，建议主管每周抽查。'}
+          ? '技术支持部第二项（对公群）现在按旧方法「按时间切段」计分（设置 → 考核规则里可以改成按群问题）。'
+          : '技术支持部第二项（对公群）按这里的群问题计分（处理人、状态、难度按主管改过的算；设置 → 考核规则里可以切回旧方法）。AI 会出错，建议主管每周抽查，没解决的问题记得标交接。'}
         点问题打开，看聊天记录，三项各点「对 / 不对」，判断错的直接改处理人或状态；今天的问题还可能变，建议核对前一天及以前的。
       </div>
 
@@ -329,7 +329,7 @@ const IssuesPage: React.FC = () => {
           <div style={{ padding: '20px 24px 4px' }} className="panel-title">每人汇总</div>
           <div className="footnote" style={{ padding: '0 24px 8px' }}>
             共 {data.counts.all} 个问题；另有 {data.counts.others} 个是商务、客服等不计入的人处理的，{data.counts.nobody} 个没人处理。
-            闭环率 = 各问题计分之和 ÷ 问题数（解决 1、交接完整 0.8、交接不完整 0.4、没解决 0；判断不了的确认前不算）。和「规则群会话」差得多的人，优先抽他的问题核对。
+            闭环率 = 各问题计分之和 ÷ 问题数（解决 1、交接完整 0.8、交接不完整 0.4、没解决 0；判断不了的确认前不算）。和「按时间切段」差得多的人，优先抽他的问题核对。
           </div>
           <Table rowKey="sysUserId" size="middle" columns={personCols} dataSource={data.summary} pagination={false} />
         </div>

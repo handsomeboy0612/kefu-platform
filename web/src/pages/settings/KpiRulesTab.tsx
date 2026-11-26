@@ -107,7 +107,7 @@ const CS_SCHEMA: Section[] = [
 
 const TECH_SCHEMA: Section[] = [
   {
-    title: '总分构成', desc: '总 KPI = 第一项 × 占比 + 第二项 × 占比 + 主管评分；三者合计 100。缺一项时按另一项折算。',
+    title: '总分构成', desc: '按《技术支持部绩效考核标准》：第一项 = 网页客服接待（SaleSmartly 在线咨询），第二项 = 对公群技术售后（企业微信对公群里的客户问题）。总 KPI = 第一项 × 占比 + 第二项 × 占比 + 主管评分；三者合计 100。某人只有一项有数据时，按那一项折算。',
     sum: { paths: ['total.part1Weight', 'total.part2Weight', 'total.supervisorMax'], target: 100 },
     fields: [
       { kind: 'num', path: 'total.part1Weight', label: '第一项 · 客服接待', unit: '%' },
@@ -120,7 +120,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第一项 · 各小项分值', desc: '合计 100。某小项没数据就不计分，按能考核的小项折算成百分制。',
+    title: '第一项（网页客服接待）· 各小项分值', desc: '合计 100。某小项没数据就不计分，按能考核的小项折算成百分制。',
     sum: { paths: ['part1.weights.sessions', 'part1.weights.firstResp', 'part1.weights.avgResp', 'part1.weights.satisfaction', 'part1.weights.aiQuality', 'part1.weights.replyRate'], target: 100 },
     fields: [
       { kind: 'num', path: 'part1.weights.sessions', label: '接待量', unit: '分' },
@@ -131,16 +131,16 @@ const TECH_SCHEMA: Section[] = [
       { kind: 'num', path: 'part1.weights.replyRate', label: '人工回复率', unit: '分' }
     ]
   },
-  { title: '第一项 · 接待量', desc: '和团队平均（白班 + 晚班）比。', fields: [...volume('part1.sessions.dayEvening', '白班 / 晚班'), ...volume('part1.sessions.night', '通宵班')] },
+  { title: '第一项（网页客服接待）· 接待量', desc: '和团队平均（白班 + 晚班）比。', fields: [...volume('part1.sessions.dayEvening', '白班 / 晚班'), ...volume('part1.sessions.night', '通宵班')] },
   {
-    title: '第一项 · 响应速度',
+    title: '第一项（网页客服接待）· 响应速度',
     fields: [
       { kind: 'tiers', path: 'part1.firstRespTiers', label: '首次响应阶梯', cols: RESP_TIER },
       { kind: 'tiers', path: 'part1.avgRespTiers', label: '平均响应阶梯', cols: RESP_TIER }
     ]
   },
   {
-    title: '第一项 · 客户满意度', desc: '三点曲线：≥ 满分线满分，= 中间线得中间比例，≤ 零分线 0 分，之间线性。',
+    title: '第一项（网页客服接待）· 客户满意度', desc: '三点曲线：≥ 满分线满分，= 中间线得中间比例，≤ 零分线 0 分，之间线性。',
     fields: [
       { kind: 'num', path: 'part1.satisfaction.curve.full', label: '满分线', unit: '星', step: 0.05 },
       { kind: 'num', path: 'part1.satisfaction.curve.mid', label: '中间线', unit: '星', step: 0.05 },
@@ -151,7 +151,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第一项 · AI 对话质量和人工回复率',
+    title: '第一项（网页客服接待）· AI 对话质量和人工回复率',
     fields: [
       { kind: 'num', path: 'part1.aiQuality.full', label: 'AI 平均分达到多少得满分', unit: '分' },
       { kind: 'num', path: 'part1.aiQuality.zero', label: 'AI 平均分低于多少得 0', unit: '分' },
@@ -163,7 +163,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第一项 · 扣分',
+    title: '第一项（网页客服接待）· 扣分',
     fields: [
       { kind: 'num', path: 'part1.deduction.complaint', label: '有效投诉每次扣', unit: '分' },
       { kind: 'num', path: 'part1.deduction.unresolvedBad', label: '差评没跟进闭环每次扣', unit: '分' },
@@ -172,13 +172,13 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项 · 数据来源', desc: '按 AI 群问题：一个客户问题算一个，处理人、状态按主管在「群问题」里改过的算，处理时效和问题闭环率都有数据。按规则群会话：隔 30 分钟切一段、谁先回复算谁，处理时效和闭环率没有数据、不计分。',
+    title: '第二项（对公群技术售后）· 数据来源', desc: '对公群的聊天怎么拆成一件件来算分。「AI 整理的客户问题」（现在用的）：AI 读群聊，一个客户问题算一件，看谁实际处理、解决没有，主管可以在「群问题」里改；处理时效、闭环率都能算。「按时间切段（旧方法）」：群里停 30 分钟就切一段，谁先回复算谁的，分不清问题、看不出解决没有，处理时效和闭环率不计分；只在 AI 结果有问题时临时切回去用。',
     fields: [
-      { kind: 'choice', path: 'part2.source', label: '第二项按什么算', options: [{ value: 'ai', label: 'AI 群问题' }, { value: 'rule', label: '规则群会话' }] }
+      { kind: 'choice', path: 'part2.source', label: '第二项按什么算', options: [{ value: 'ai', label: 'AI 整理的客户问题' }, { value: 'rule', label: '按时间切段（旧方法）' }] }
     ]
   },
   {
-    title: '第二项 · 各小项分值', desc: '合计 100。处理时效、问题闭环率只有按 AI 群问题算时才有数据；按规则群会话算时这两项不计分，按其余小项折算。',
+    title: '第二项（对公群技术售后）· 各小项分值', desc: '合计 100。处理时效、问题闭环率只有按「AI 整理的客户问题」算时才有数据；切回旧方法时这两项不计分，按其余小项折算。',
     sum: { paths: ['part2.weights.solved', 'part2.weights.firstResp', 'part2.weights.avgResp', 'part2.weights.timeliness', 'part2.weights.closure', 'part2.weights.satisfaction'], target: 100 },
     fields: [
       { kind: 'num', path: 'part2.weights.solved', label: '解决问题数', unit: '分' },
@@ -190,7 +190,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项 · 解决问题数', desc: '处理人接手的群问题都算（是否解决由闭环率去算），按难度加权后和团队平均比：简单 ×1，一般、疑难按下面的倍数；难度由主管在「群问题」里标，没标的按简单。',
+    title: '第二项（对公群技术售后）· 解决问题数', desc: '处理人接手的群问题都算（是否解决由闭环率去算），按难度加权后和团队平均比：简单 ×1，一般、疑难按下面的倍数；难度由主管在「群问题」里标，没标的按简单。',
     fields: [
       { kind: 'num', path: 'part2.difficulty.normal', label: '一般问题算几个', unit: '个', step: 0.1 },
       { kind: 'num', path: 'part2.difficulty.hard', label: '疑难问题算几个', unit: '个', step: 0.1 },
@@ -198,14 +198,14 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项 · 响应速度', desc: '每个群问题单独打分，最后取平均。首次响应：从商务、主管或客户 @ 处理人让他看开始算；没人 @ 他、他自己接的，从客户这一轮提问开始算（1 分钟内连发的算一条，从最后一条算）→ 处理人第一次回应（「收到，正在看」「稍等」也算，只 @ 同事的派单不算）。平均响应：接手后客户每轮提问到处理人回应的平均；别的同事先回了的那一轮不算，客户只回「好的」「谢谢」不算提问。值班按全天有人算，不扣非值班时间。',
+    title: '第二项（对公群技术售后）· 响应速度', desc: '每个群问题单独打分，最后取平均。首次响应：从商务、主管或客户 @ 处理人让他看开始算；没人 @ 他、他自己接的，从客户这一轮提问开始算（1 分钟内连发的算一条，从最后一条算）→ 处理人第一次回应（「收到，正在看」「稍等」也算，只 @ 同事的派单不算）。平均响应：接手后客户每轮提问到处理人回应的平均；别的同事先回了的那一轮不算，客户只回「好的」「谢谢」不算提问。值班按全天有人算，不扣非值班时间。',
     fields: [
       { kind: 'tiers', path: 'part2.firstRespTiers', label: '首次响应阶梯', cols: RESP_TIER },
       { kind: 'tiers', path: 'part2.avgRespTiers', label: '平均响应阶梯', cols: RESP_TIER }
     ]
   },
   {
-    title: '第二项 · 处理时效', desc: '只在按 AI 群问题算时用，每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。3600 秒 = 1 小时。',
+    title: '第二项（对公群技术售后）· 处理时效', desc: '只在按 AI 群问题算时用，每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。3600 秒 = 1 小时。',
     fields: [
       { kind: 'num', path: 'part2.timeliness.fullSec', label: '多久内处理完得满分', unit: '秒' },
       { kind: 'num', path: 'part2.timeliness.syncSec', label: '超时后，每隔多久至少同步一次进度', unit: '秒' },
@@ -213,7 +213,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项 · 问题闭环率', desc: '闭环率 = 各问题计分之和 ÷ 问题数：自己解决算 1（客户确认，或 24 小时内没再追问）；没解决但交接了，按下面的计分（交接完整 / 不完整由主管在「群问题」里改状态）；没解决、没交接算 0。判断不了的问题主管确认前不算。闭环率在两点之间线性折算，低于最后一点得最后一点的分。',
+    title: '第二项（对公群技术售后）· 问题闭环率', desc: '闭环率 = 各问题计分之和 ÷ 问题数：自己解决算 1（客户确认，或 24 小时内没再追问）；没解决但交接了，按下面的计分（交接完整 / 不完整由主管在「群问题」里改状态）；没解决、没交接算 0。判断不了的问题主管确认前不算。闭环率在两点之间线性折算，低于最后一点得最后一点的分。',
     fields: [
       { kind: 'num', path: 'part2.closureRule.handedFull', label: '没解决但交接完整，算', unit: '个', step: 0.1 },
       { kind: 'num', path: 'part2.closureRule.handedPart', label: '有交接但不完整，算', unit: '个', step: 0.1 },
@@ -221,7 +221,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项 · 客户满意度和扣分', desc: '满意度起评满分，按人工录入的投诉逐次扣。',
+    title: '第二项（对公群技术售后）· 客户满意度和扣分', desc: '满意度起评满分，按人工录入的投诉逐次扣。',
     fields: [
       { kind: 'num', path: 'part2.satisfaction.complaint', label: '有效投诉每次扣', unit: '分' },
       { kind: 'num', path: 'part2.satisfaction.mild', label: '轻度抱怨每次扣', unit: '分' },

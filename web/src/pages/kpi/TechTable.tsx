@@ -77,7 +77,7 @@ const TechTable: React.FC<{
                   解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt}{p.handedCnt ? ` · 交接 ${p.handedCnt}` : ''} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
                   {p.avgResolveSec != null ? ` · 平均处理 ${fmtSec(p.avgResolveSec)}` : ''}
                 </div>
-              : <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}，按规则切段）· 首响 {fmtSec(p.avgFirstSec)}</div>}
+              : <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}，按时间切段的旧方法）· 首响 {fmtSec(p.avgFirstSec)}</div>}
             <Items items={p.items} names={P2_NAMES} />
           </div>
         )
