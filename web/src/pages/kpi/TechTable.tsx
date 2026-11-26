@@ -73,8 +73,8 @@ const TechTable: React.FC<{
             <div className="kpi-part-head"><b className="kpi-total" style={{ fontSize: 18 }}>{p.score}</b><KpiGrade grade={p.grade} coeff={p.coeff} /></div>
             {p.source === 'ai'
               ? <div className="kpi-cell-sub">
-                  群问题 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}）· 首响 {fmtSec(p.avgFirstSec)} 均响 {fmtSec(p.avgReplySec)}<br />
-                  解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
+                  群问题 {p.threadCnt}{p.weightedCnt != null && p.weightedCnt !== p.threadCnt ? `（难度加权 ${p.weightedCnt}）` : ''}，{p.roomCnt} 个群，团队 {p.teamAvgCnt} · 首响 {fmtSec(p.avgFirstSec)} 均响 {fmtSec(p.avgReplySec)}<br />
+                  解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt}{p.handedCnt ? ` · 交接 ${p.handedCnt}` : ''} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
                   {p.avgResolveSec != null ? ` · 平均处理 ${fmtSec(p.avgResolveSec)}` : ''}
                 </div>
               : <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}，按规则切段）· 首响 {fmtSec(p.avgFirstSec)}</div>}

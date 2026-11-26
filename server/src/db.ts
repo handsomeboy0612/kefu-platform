@@ -375,6 +375,11 @@ export async function ensureSchema(): Promise<void> {
   await addColumn('ss_sessions', 'issue_first_sec', 'issue_first_sec INT NULL AFTER issue_summary')
   await addColumn('ss_sessions', 'issue_avg_sec', 'issue_avg_sec INT NULL AFTER issue_first_sec')
   await addColumn('ss_sessions', 'issue_resolve_sec', 'issue_resolve_sec INT NULL AFTER issue_avg_sec')
+  // 处理期间处理人最长多久没同步进度（秒，处理时效用）、难度（1 简单 / 2 一般 / 3 疑难）
+  await addColumn('ss_sessions', 'issue_sync_gap_sec', 'issue_sync_gap_sec INT NULL AFTER issue_resolve_sec')
+  await addColumn('ss_sessions', 'issue_difficulty', 'issue_difficulty TINYINT NOT NULL DEFAULT 1 AFTER issue_sync_gap_sec')
+  // 主管标的难度（NULL = 没标，按简单算）；状态加了「交接完整 handed / 交接不完整 handed_part」
+  await addColumn('wg_issue_marks', 'difficulty', 'difficulty TINYINT NULL AFTER override_status')
   // 以前按规则切的群会话存的是 wg，改成 wgr（会话 ID 都是 wg_ 开头；群问题是 wgi_ 开头）
   await execute("UPDATE ss_sessions SET source = 'wgr' WHERE source = 'wg' AND session_id LIKE ?", ['wg\\_%'])
   // 同步结果的补充信息（对公群的挂靠提醒、采集中断等）

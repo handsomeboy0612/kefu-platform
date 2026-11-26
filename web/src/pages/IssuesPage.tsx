@@ -11,10 +11,10 @@ interface Review { boundaryOk: number | null; handlerOk: number | null; statusOk
 interface Issue {
   id: number; day: string; roomName: string; summary: string; messageCount: number
   handlerUserId: string; handlerName: string; handlerMember: string; counted: boolean; handlerReason: string; aiHandlerName: string
-  status: 'resolved' | 'unresolved' | 'unknown'; aiStatus: string; overridden: boolean; evidence: string
+  status: string; aiStatus: string; overridden: boolean; evidence: string; difficulty: number; syncGapSec: number | null
   firstCustomerAt: number; firstReplySec: number | null; resolveSec: number | null; review: Review | null
 }
-interface Person { name: string; sysUserId: number; issues: number; resolved: number; unresolved: number; unknown: number; closureRate: number | null; avgFirstSec: number | null; avgResolveSec: number | null; ruleSessions: number }
+interface Person { name: string; sysUserId: number; issues: number; weighted: number; resolved: number; unresolved: number; handed: number; unknown: number; closureRate: number | null; avgFirstSec: number | null; avgResolveSec: number | null; ruleSessions: number }
 interface ListResp {
   total: number; list: Issue[]; counts: { all: number; others: number; nobody: number }; summary: Person[]
   accuracy: { reviewed: number; allOk: number; boundaryOk: number; handlerOk: number; statusOk: number }
@@ -29,8 +29,14 @@ interface Detail {
   handlerOptions: Array<{ userId: string; name: string; counted: boolean }>
 }
 
-const STATUS_TEXT: Record<string, string> = { resolved: '已解决', unresolved: '未解决', unknown: '判断不了' }
-const STATUS_CLASS: Record<string, string> = { resolved: 'success', unresolved: 'danger', unknown: 'muted' }
+const STATUS_TEXT: Record<string, string> = { resolved: '已解决', unresolved: '未解决', unknown: '判断不了', handed: '交接完整', handed_part: '交接不完整' }
+const STATUS_CLASS: Record<string, string> = { resolved: 'success', unresolved: 'danger', unknown: 'muted', handed: 'muted', handed_part: 'muted' }
+/** 改状态的选项（交接两项只能主管标） */
+const STATUS_OPTIONS = [
+  { value: 'resolved', label: '已解决（闭环 1）' }, { value: 'handed', label: '没解决·交接完整（0.8）' },
+  { value: 'handed_part', label: '没解决·交接不完整（0.4）' }, { value: 'unresolved', label: '未解决·没交接（0）' }, { value: 'unknown', label: '判断不了（不算）' }
+]
+const DIFFICULTY_TEXT: Record<number, string> = { 1: '简单', 2: '一般', 3: '疑难' }
 const pad = (n: number): string => String(n).padStart(2, '0')
 const ymd = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 const sec = (s: number | null): string => (s == null ? '—' : s < 60 ? `${s}秒` : s < 3600 ? `${Math.round(s / 60)}分钟` : `${Math.floor(s / 3600)}小时${Math.round((s % 3600) / 60)}分`)
@@ -115,7 +121,10 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
               <div><span>状态</span><b><StatusPill s={i.status} overridden={i.overridden} /></b></div>
               <div><span>首响</span><b>{sec(i.firstReplySec)}</b></div>
               <div><span>平均响应</span><b>{sec(i.avgReplySec)}</b></div>
-              <div><span>处理时效</span><b>{sec(i.resolveSec)}</b></div>
+              <div>
+                <span>处理时效</span>
+                <b>{sec(i.resolveSec)}{i.resolveSec != null && i.resolveSec > 3600 && <em>（期间最长 {sec(i.syncGapSec)} 没同步进度）</em>}</b>
+              </div>
               <div>
                 <span>单题分</span>
                 <Tooltip content={<ScoreParts parts={i.scoreParts} />}>
@@ -133,8 +142,11 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
                 optionList={[{ value: '', label: '没人处理' }, ...d.handlerOptions.map((o) => ({ value: o.userId, label: o.counted ? o.name : `${o.name}（不计入）` }))]}
                 onChange={(v) => void override({ handlerUserId: String(v ?? '') })} />
               <span className="form-label">改状态</span>
-              <Select size="small" style={{ width: 120 }} value={i.status} optionList={Object.entries(STATUS_TEXT).map(([value, label]) => ({ value, label }))}
+              <Select size="small" style={{ width: 200 }} value={i.status} optionList={STATUS_OPTIONS}
                 onChange={(v) => void override({ status: String(v) })} />
+              <span className="form-label">难度</span>
+              <Select size="small" style={{ width: 90 }} value={i.difficulty || 1} optionList={[1, 2, 3].map((v) => ({ value: v, label: DIFFICULTY_TEXT[v] }))}
+                onChange={(v) => void override({ difficulty: Number(v) === 1 ? null : Number(v) })} />
               {i.overridden && <Button size="small" theme="borderless" onClick={() => void override({ handlerUserId: null, status: null })}>恢复 AI 的判断</Button>}
             </div>
           </div>
@@ -248,10 +260,11 @@ const IssuesPage: React.FC = () => {
 
   const personCols = [
     { title: '处理人', dataIndex: 'name' },
-    { title: 'AI 识别的问题', dataIndex: 'issues', width: 120 },
+    { title: 'AI 识别的问题', dataIndex: 'issues', width: 120, render: (v: number, p: Person) => (p.weighted !== v ? <span>{v}<span className="kpi-cell-sub">（加权 {p.weighted}）</span></span> : v) },
     { title: data?.kpiSource === 'rule' ? '规则群会话（现在计分用的）' : '规则群会话（对照）', dataIndex: 'ruleSessions', width: 170 },
     { title: '已解决', dataIndex: 'resolved', width: 80 },
     { title: '未解决', dataIndex: 'unresolved', width: 80 },
+    { title: '交接', dataIndex: 'handed', width: 70 },
     { title: '判断不了', dataIndex: 'unknown', width: 90 },
     { title: '闭环率', dataIndex: 'closureRate', width: 90, render: (v: number | null) => (v == null ? '—' : `${v}%`) },
     { title: '平均首响', dataIndex: 'avgFirstSec', width: 100, render: (v: number | null) => sec(v) },
@@ -264,7 +277,7 @@ const IssuesPage: React.FC = () => {
         title="群问题"
         desc="AI 把对公群的聊天按「客户问题」整理出来：谁实际处理的、解决没有、依据哪句原话。首响、处理时效由程序按消息时间算。"
         scope={dept.name}
-        scopeHint="试运行：只展示、不进绩效 · 每 10 分钟同步群消息，一个群聊天停下 30 分钟就自动分析（当天也分析）"
+        scopeHint={`${data?.kpiSource === 'rule' ? '第二项现在按规则群会话计分' : '计入技术支持部第二项'} · 每 10 分钟同步群消息，一个群聊天停下 30 分钟就自动分析（当天也分析）`}
         extra={
           <>
             {data?.analysis.progress
@@ -316,7 +329,7 @@ const IssuesPage: React.FC = () => {
           <div style={{ padding: '20px 24px 4px' }} className="panel-title">每人汇总</div>
           <div className="footnote" style={{ padding: '0 24px 8px' }}>
             共 {data.counts.all} 个问题；另有 {data.counts.others} 个是商务、客服等不计入的人处理的，{data.counts.nobody} 个没人处理。
-            闭环率 = 已解决 ÷（已解决 + 未解决），判断不了的不算。和「规则群会话」差得多的人，优先抽他的问题核对。
+            闭环率 = 各问题计分之和 ÷ 问题数（解决 1、交接完整 0.8、交接不完整 0.4、没解决 0；判断不了的确认前不算）。和「规则群会话」差得多的人，优先抽他的问题核对。
           </div>
           <Table rowKey="sysUserId" size="middle" columns={personCols} dataSource={data.summary} pagination={false} />
         </div>

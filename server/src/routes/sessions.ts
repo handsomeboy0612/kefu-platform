@@ -42,6 +42,8 @@ interface SessionDbRow {
   issue_first_sec: number | null
   issue_avg_sec: number | null
   issue_resolve_sec: number | null
+  issue_sync_gap_sec: number | null
+  issue_difficulty: number
 }
 
 const toView = (r: SessionDbRow): Record<string, unknown> => ({
@@ -73,7 +75,9 @@ const toView = (r: SessionDbRow): Record<string, unknown> => ({
   issueSummary: r.issue_summary || '',
   issueFirstSec: r.issue_first_sec == null ? null : Number(r.issue_first_sec),
   issueAvgSec: r.issue_avg_sec == null ? null : Number(r.issue_avg_sec),
-  issueResolveSec: r.issue_resolve_sec == null ? null : Number(r.issue_resolve_sec)
+  issueResolveSec: r.issue_resolve_sec == null ? null : Number(r.issue_resolve_sec),
+  issueSyncGapSec: r.issue_sync_gap_sec == null ? null : Number(r.issue_sync_gap_sec),
+  issueDifficulty: Number(r.issue_difficulty) || 1
 })
 
 /** 对公群问题的单题分（技术支持部第二项规则；别的部门没有） */
@@ -82,7 +86,10 @@ async function withIssueScore(dept: Department, list: Array<Record<string, unkno
   const P = ((await getRules(dept)).rules as TechRules).part2
   return list.map((x) => {
     if (x.source !== 'wg') return x
-    const s = issueScore(P, { firstSec: x.issueFirstSec as number | null, avgSec: x.issueAvgSec as number | null, status: String(x.issueStatus || ''), resolveSec: x.issueResolveSec as number | null })
+    const s = issueScore(P, {
+      firstSec: x.issueFirstSec as number | null, avgSec: x.issueAvgSec as number | null, status: String(x.issueStatus || ''),
+      resolveSec: x.issueResolveSec as number | null, syncGapSec: x.issueSyncGapSec as number | null
+    })
     return { ...x, issueScore: s.score, issueParts: s.parts }
   })
 }
@@ -91,7 +98,7 @@ const SELECT = `
   SELECT s.session_id, s.source, s.chat_user_id, s.customer_name, s.sys_user_id, s.channel, s.start_time, s.end_time, s.assign_time,
          s.star_score, s.msg_count, s.user_msg_count, s.kf_msg_count, s.msgs_synced, m.nickname, m.participate, m.active,
          sc.status sc_status, sc.total_score sc_total, sc.grade sc_grade, sc.reviewed sc_reviewed, s.issue_id, s.issue_status, s.issue_summary,
-         s.issue_first_sec, s.issue_avg_sec, s.issue_resolve_sec`
+         s.issue_first_sec, s.issue_avg_sec, s.issue_resolve_sec, s.issue_sync_gap_sec, s.issue_difficulty`
 
 export async function deptScope(req: FastifyRequest): Promise<{ dept: Department; projectId: string }> {
   const dept = await resolveDepartment(req, (req.query as { dept?: string }).dept)

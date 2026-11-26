@@ -3,7 +3,7 @@
  * 总 KPI = 第一项·客服接待 × part1Weight% + 第二项·对公群技术售后 × part2Weight% + 主管评分。
  * 某一小项没数据就不计分，大项得分 = 实际得分 ÷ 能考核小项的满分合计 × 100；加分扣分在折算后统一加减。
  *
- * 第二项（对公群）：默认按 AI 整理的群问题算（一个问题算一个，处理人按主管改过的；有处理时效、问题闭环率），
+ * 第二项（对公群）：按《技术支持部绩效考核标准》第三部分，默认按 AI 整理的群问题算（处理人、状态、难度按主管改过的），
  * 考核规则里可以切回按规则切的群会话（处理时效、闭环率没有数据，不计分）。没有对公群数据的人第二项不考核，总 KPI 按第一项折算。
  */
 import type { GradeRule, ManualEntry, RateCurve, ResponseTier, TechRules, VolumeCurve } from './rules'
@@ -60,8 +60,12 @@ export interface TechPart2 {
   teamAvgCnt: number
   avgFirstSec: number | null
   avgReplySec: number | null
+  /** 难度加权后的问题数（解决问题数按这个和团队平均比） */
+  weightedCnt: number
   resolvedCnt: number
   unresolvedCnt: number
+  /** 没解决但交接了（完整 / 不完整） */
+  handedCnt: number
   unknownCnt: number
   closureRate: number | null
   avgResolveSec: number | null
@@ -84,8 +88,11 @@ export interface TechKpiResult {
   busySec: number
 }
 
-/** 对公群里的一个群问题（或规则群会话）：首响 / 均响（秒）；群问题另有状态和处理时长 */
-export interface GroupThread { firstSec: number | null; avgSec: number | null; status?: string; resolveSec?: number | null }
+/**
+ * 对公群里的一个群问题（或规则群会话）：首响 / 均响（秒）。群问题另有：状态（resolved / unresolved / handed / handed_part / unknown）、
+ * 处理时长（首次响应 → 解决）、期间最长多久没同步进度、难度（1 简单 / 2 一般 / 3 疑难）
+ */
+export interface GroupThread { firstSec: number | null; avgSec: number | null; status?: string; resolveSec?: number | null; syncGapSec?: number | null; difficulty?: number }
 /** 对公群每人的群问题（或规则群会话） */
 export type GroupStats = Record<string, { name: string; roomCnt: number; threads: GroupThread[] }>
 
@@ -111,6 +118,41 @@ function curvePct(v: number, c: RateCurve): number {
   return 0
 }
 
+/** 处理时效得分比例：只算已解决的问题 */
+export function timelinessPct(P: TechRules['part2'], t: GroupThread): number | null {
+  if (t.status !== 'resolved' || t.resolveSec == null) return null
+  const T = P.timeliness
+  if (t.resolveSec <= T.fullSec) return 100
+  return t.syncGapSec != null && t.syncGapSec <= T.syncSec ? T.syncedPercent : 0
+}
+
+/** 一个问题的闭环计分（0 ~ 1）；判断不了的确认前不算（null） */
+export function closureValue(P: TechRules['part2'], status: string | undefined): number | null {
+  switch (status) {
+    case 'resolved': return 1
+    case 'handed': return P.closureRule.handedFull
+    case 'handed_part': return P.closureRule.handedPart
+    case 'unresolved': return 0
+    default: return null
+  }
+}
+
+/** 闭环率（%）→ 得分比例：按点线性折算 */
+export function closurePct(rate: number, points: Array<{ rate: number; percent: number }>): number {
+  const ps = [...points].sort((a, b) => b.rate - a.rate)
+  if (!ps.length) return 0
+  if (rate >= ps[0].rate) return ps[0].percent
+  for (let i = 1; i < ps.length; i++) {
+    const hi = ps[i - 1]
+    const lo = ps[i]
+    if (rate >= lo.rate) return hi.rate > lo.rate ? lo.percent + ((rate - lo.rate) / (hi.rate - lo.rate)) * (hi.percent - lo.percent) : hi.percent
+  }
+  return ps[ps.length - 1].percent
+}
+
+/** 难度权重：简单 1，一般 / 疑难按规则 */
+export const difficultyWeight = (P: TechRules['part2'], d: number | undefined): number => (d === 3 ? P.difficulty.hard : d === 2 ? P.difficulty.normal : 1)
+
 /**
  * 单个群问题的得分（会话记录里显示）：第二项里能按单个问题算的几项——首次响应、平均响应、处理时效、是否解决——
  * 按各自分值加权平均，0 ~ 100。判断不了的问题不算「是否解决」；没解决的不算处理时效。
@@ -121,8 +163,8 @@ export function issueScore(P: TechRules['part2'], t: GroupThread): { score: numb
   const parts: Record<string, number | null> = {
     firstResp: t.firstSec == null ? null : tierPct(t.firstSec, P.firstRespTiers),
     avgResp: t.avgSec == null ? null : tierPct(t.avgSec, P.avgRespTiers),
-    timeliness: t.status === 'resolved' && t.resolveSec != null ? tierPct(t.resolveSec, P.timelinessTiers) : null,
-    closure: t.status === 'resolved' ? 100 : t.status === 'unresolved' ? 0 : null
+    timeliness: timelinessPct(P, t),
+    closure: ((v) => (v === null ? null : v * 100))(closureValue(P, t.status))
   }
   let num = 0
   let den = 0
@@ -258,7 +300,9 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
   const P = R.part2
   const w = P.weights
   const threadCnt = wg.threads.length
-  const vol = volumePct(threadCnt, teamAvg, isNight ? P.solved.night : P.solved.dayEvening)
+  const isAi = P.source === 'ai'
+  const weightedCnt = isAi ? wg.threads.reduce((s, t) => s + difficultyWeight(P, t.difficulty), 0) : threadCnt
+  const vol = volumePct(weightedCnt, teamAvg, isNight ? P.solved.night : P.solved.dayEvening)
   const solved: KpiItem = { full: w.solved, score: (vol.pct / 100) * w.solved }
 
   const firsts = wg.threads.map((t) => t.firstSec).filter((s): s is number => s !== null)
@@ -270,16 +314,17 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
   const firstResp: KpiItem = { full: w.firstResp, score: fp === null ? null : (fp / 100) * w.firstResp }
   const avgResp: KpiItem = { full: w.avgResp, score: ap === null ? null : (ap / 100) * w.avgResp }
   // 处理时效、问题闭环率：只有按 AI 群问题算时才有数据；按规则群会话算时不计分
-  const isAi = P.source === 'ai'
-  const resolved = wg.threads.filter((t) => t.status === 'resolved')
-  const resolvedCnt = isAi ? resolved.length : 0
-  const unresolvedCnt = isAi ? wg.threads.filter((t) => t.status === 'unresolved').length : 0
-  const unknownCnt = isAi ? threadCnt - resolvedCnt - unresolvedCnt : 0
-  const resolveSecs = isAi ? resolved.map((t) => t.resolveSec).filter((s): s is number => s != null) : []
-  const tp = meanPct(resolveSecs, P.timelinessTiers)
-  const timeliness: KpiItem = { full: w.timeliness, score: tp === null ? null : (tp / 100) * w.timeliness }
-  const closureRate = resolvedCnt + unresolvedCnt > 0 ? (resolvedCnt / (resolvedCnt + unresolvedCnt)) * 100 : null
-  const closure: KpiItem = { full: w.closure, score: closureRate === null ? null : (curvePct(closureRate, P.closureCurve) / 100) * w.closure }
+  const cnt = (s: string): number => (isAi ? wg.threads.filter((t) => t.status === s).length : 0)
+  const resolvedCnt = cnt('resolved')
+  const unresolvedCnt = cnt('unresolved')
+  const handedCnt = cnt('handed') + cnt('handed_part')
+  const unknownCnt = isAi ? threadCnt - resolvedCnt - unresolvedCnt - handedCnt : 0
+  const tps = isAi ? wg.threads.map((t) => timelinessPct(P, t)).filter((x): x is number => x !== null) : []
+  const timeliness: KpiItem = { full: w.timeliness, score: tps.length ? (tps.reduce((a, b) => a + b, 0) / tps.length / 100) * w.timeliness : null }
+  const cvs = isAi ? wg.threads.map((t) => closureValue(P, t.status)).filter((x): x is number => x !== null) : []
+  const closureRate = cvs.length ? (cvs.reduce((a, b) => a + b, 0) / cvs.length) * 100 : null
+  const closure: KpiItem = { full: w.closure, score: closureRate === null ? null : (closurePct(closureRate, P.closureRule.points) / 100) * w.closure }
+  const resolveSecs = isAi ? wg.threads.filter((t) => t.status === 'resolved').map((t) => t.resolveSec).filter((s): s is number => s != null) : []
 
   const S = P.satisfaction
   const complaints = m.p2Complaints || 0
@@ -301,7 +346,7 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
     score, base: r1(base), bonus: vol.bonus, praise, deduction, grade: g.grade, coeff: g.coeff,
     items: { solved: roundItem(solved), firstResp: roundItem(firstResp), avgResp: roundItem(avgResp), timeliness: roundItem(timeliness), closure: roundItem(closure), satisfaction: roundItem(satisfaction) },
     source: P.source, threadCnt, roomCnt: wg.roomCnt, teamAvgCnt: r1(teamAvg), avgFirstSec: mean(firsts), avgReplySec: mean(avgs),
-    resolvedCnt, unresolvedCnt, unknownCnt, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
+    weightedCnt: r1(weightedCnt), resolvedCnt, unresolvedCnt, handedCnt, unknownCnt, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
   }
 }
 
@@ -324,7 +369,11 @@ export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, Manu
   const p1Rows = rows.filter((r) => (r.start_session_pv || 0) > 0)
   const p2Rows = rows.filter((r) => groupCnt(r.sys_user_id) > 0)
   const teamAvg1 = teamAverage(p1Rows.map((r) => [d.shiftOf(r.sys_user_id), r.start_session_pv || 0]))
-  const teamAvg2 = teamAverage(p2Rows.map((r) => [d.shiftOf(r.sys_user_id), groupCnt(r.sys_user_id)]))
+  // 团队平均：按 AI 群问题算时用难度加权后的问题数
+  const weighted = (uid: number): number => R.part2.source === 'ai'
+    ? (group[String(uid)]?.threads || []).reduce((s, t) => s + difficultyWeight(R.part2, t.difficulty), 0)
+    : groupCnt(uid)
+  const teamAvg2 = teamAverage(p2Rows.map((r) => [d.shiftOf(r.sys_user_id), weighted(r.sys_user_id)]))
   const ts = p1Rows.map(starOf).reduce((a, s) => ({ sum: a.sum + s.sum, cnt: a.cnt + s.cnt }), { sum: 0, cnt: 0 })
   const teamStar = ts.cnt > 0 ? ts.sum / ts.cnt : null
 

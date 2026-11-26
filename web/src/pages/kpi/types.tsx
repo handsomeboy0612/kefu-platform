@@ -57,7 +57,7 @@ export interface TechPart2 {
   threadCnt: number; roomCnt: number; teamAvgCnt: number; avgFirstSec: number | null; avgReplySec: number | null
   /** ai = 按群问题算；rule = 按规则群会话算（老快照没有这个字段，按 rule） */
   source?: 'ai' | 'rule'
-  resolvedCnt?: number; unresolvedCnt?: number; unknownCnt?: number; closureRate?: number | null; avgResolveSec?: number | null
+  weightedCnt?: number; resolvedCnt?: number; unresolvedCnt?: number; handedCnt?: number; unknownCnt?: number; closureRate?: number | null; avgResolveSec?: number | null
 }
 
 export interface TechResult {

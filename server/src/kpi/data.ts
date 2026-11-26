@@ -107,8 +107,9 @@ export async function coverage(projectId: string, deptId: number, begin: number,
  * 首响 / 均响 / 处理时长在把群问题写进会话记录时已经算好（issues/sessions.ts）。
  */
 export async function issueStats(projectId: string, deptId: number, begin: number, end: number): Promise<GroupStats> {
-  const rows = await query<{ sys_user_id: number; room_id: string; nickname: string; issue_status: string; issue_first_sec: number | null; issue_avg_sec: number | null; issue_resolve_sec: number | null }>(
-    `SELECT s.sys_user_id, s.room_id, m.nickname, s.issue_status, s.issue_first_sec, s.issue_avg_sec, s.issue_resolve_sec FROM ss_sessions s
+  const rows = await query<{ sys_user_id: number; room_id: string; nickname: string; issue_status: string; issue_first_sec: number | null; issue_avg_sec: number | null; issue_resolve_sec: number | null; issue_sync_gap_sec: number | null; issue_difficulty: number }>(
+    `SELECT s.sys_user_id, s.room_id, m.nickname, s.issue_status, s.issue_first_sec, s.issue_avg_sec, s.issue_resolve_sec, s.issue_sync_gap_sec, s.issue_difficulty
+     FROM ss_sessions s
      JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
      WHERE s.project_id = ? AND s.source = 'wg' AND s.assign_time BETWEEN ? AND ?`,
     [deptId, projectId, begin, end]
@@ -118,7 +119,10 @@ export async function issueStats(projectId: string, deptId: number, begin: numbe
   for (const r of rows) {
     const a = (acc[String(r.sys_user_id)] ||= { name: r.nickname, rooms: new Set(), threads: [] })
     a.rooms.add(r.room_id)
-    a.threads.push({ firstSec: n(r.issue_first_sec), avgSec: n(r.issue_avg_sec), status: r.issue_status || 'unknown', resolveSec: n(r.issue_resolve_sec) })
+    a.threads.push({
+      firstSec: n(r.issue_first_sec), avgSec: n(r.issue_avg_sec), status: r.issue_status || 'unknown',
+      resolveSec: n(r.issue_resolve_sec), syncGapSec: n(r.issue_sync_gap_sec), difficulty: Number(r.issue_difficulty) || 1
+    })
   }
   return Object.fromEntries(Object.entries(acc).map(([k, v]) => [k, { name: v.name, roomCnt: v.rooms.size, threads: v.threads }]))
 }

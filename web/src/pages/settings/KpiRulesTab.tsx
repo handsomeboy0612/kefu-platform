@@ -32,6 +32,7 @@ function set(o: Obj, path: string, v: unknown): Obj {
 const RESP_TIER = [{ key: 'maxSec', label: '多少秒以内', unit: '秒' }, { key: 'percent', label: '得该项分值的', unit: '%', step: 0.1 }]
 const NIGHT_TIER = [{ key: 'maxSec', label: '多少秒以内', unit: '秒' }, { key: 'score', label: '直接得', unit: '分' }]
 const GRADES = [{ key: 'label', label: '等级', text: true }, { key: 'min', label: '分数线（≥）', unit: '分' }, { key: 'coeff', label: '绩效系数', step: 0.05 }]
+const CLOSURE_POINT = [{ key: 'rate', label: '闭环率达到', unit: '%' }, { key: 'percent', label: '得该项分值的', unit: '%' }]
 const BONUS = [{ key: 'ratio', label: '达到团队平均的', unit: '倍', step: 0.1 }, { key: 'extra', label: '额外加', unit: '分' }]
 
 const volume = (base: string, who: string): Field[] => [
@@ -188,22 +189,35 @@ const TECH_SCHEMA: Section[] = [
       { kind: 'num', path: 'part2.weights.satisfaction', label: '客户满意度', unit: '分' }
     ]
   },
-  { title: '第二项 · 解决问题数', fields: [...volume('part2.solved.dayEvening', '白班 / 晚班'), ...volume('part2.solved.night', '通宵班')] },
   {
-    title: '第二项 · 响应速度', desc: '每个群问题（或群会话）单独打分，最后取平均。平均响应 = 客户每轮提问到处理人回应（含「稍等」，派单不算）的平均，首次响应是其中第一轮。群里停了 30 分钟以上算新的一段对话，只算处理人参与的对话段：他被拉进来之前客户等的时间不算在他头上，一直没人回的提问也不算（晾着客户按人工录入扣分）。',
+    title: '第二项 · 解决问题数', desc: '处理人接手的群问题都算（是否解决由闭环率去算），按难度加权后和团队平均比：简单 ×1，一般、疑难按下面的倍数；难度由主管在「群问题」里标，没标的按简单。',
+    fields: [
+      { kind: 'num', path: 'part2.difficulty.normal', label: '一般问题算几个', unit: '个', step: 0.1 },
+      { kind: 'num', path: 'part2.difficulty.hard', label: '疑难问题算几个', unit: '个', step: 0.1 },
+      ...volume('part2.solved.dayEvening', '白班 / 晚班'), ...volume('part2.solved.night', '通宵班')
+    ]
+  },
+  {
+    title: '第二项 · 响应速度', desc: '每个群问题单独打分，最后取平均。首次响应：从商务、主管或客户 @ 处理人让他看开始算；没人 @ 他、他自己接的，从客户这一轮提问开始算（1 分钟内连发的算一条，从最后一条算）→ 处理人第一次回应（「收到，正在看」「稍等」也算，只 @ 同事的派单不算）。平均响应：接手后客户每轮提问到处理人回应的平均；别的同事先回了的那一轮不算，客户只回「好的」「谢谢」不算提问。值班按全天有人算，不扣非值班时间。',
     fields: [
       { kind: 'tiers', path: 'part2.firstRespTiers', label: '首次响应阶梯', cols: RESP_TIER },
       { kind: 'tiers', path: 'part2.avgRespTiers', label: '平均响应阶梯', cols: RESP_TIER }
     ]
   },
   {
-    title: '第二项 · 处理时效和问题闭环率', desc: '只在按 AI 群问题算时用。处理时效 = 处理人接手（他回应的第一轮客户提问）到解决那条消息，每个已解决的问题单独打分再平均（1800 秒 = 30 分钟，3600 秒 = 1 小时）。闭环率 = 已解决 ÷（已解决 + 未解决），判断不了的不算。',
+    title: '第二项 · 处理时效', desc: '只在按 AI 群问题算时用，每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。3600 秒 = 1 小时。',
     fields: [
-      { kind: 'tiers', path: 'part2.timelinessTiers', label: '处理时效阶梯（超过最后一档得 0）', cols: RESP_TIER },
-      { kind: 'num', path: 'part2.closureCurve.full', label: '闭环率满分线', unit: '%' },
-      { kind: 'num', path: 'part2.closureCurve.mid', label: '闭环率中间线', unit: '%' },
-      { kind: 'num', path: 'part2.closureCurve.midPercent', label: '中间线得', unit: '%' },
-      { kind: 'num', path: 'part2.closureCurve.zero', label: '闭环率零分线', unit: '%' }
+      { kind: 'num', path: 'part2.timeliness.fullSec', label: '多久内处理完得满分', unit: '秒' },
+      { kind: 'num', path: 'part2.timeliness.syncSec', label: '超时后，每隔多久至少同步一次进度', unit: '秒' },
+      { kind: 'num', path: 'part2.timeliness.syncedPercent', label: '超时但按时同步了进度，得', unit: '%' }
+    ]
+  },
+  {
+    title: '第二项 · 问题闭环率', desc: '闭环率 = 各问题计分之和 ÷ 问题数：自己解决算 1（客户确认，或 24 小时内没再追问）；没解决但交接了，按下面的计分（交接完整 / 不完整由主管在「群问题」里改状态）；没解决、没交接算 0。判断不了的问题主管确认前不算。闭环率在两点之间线性折算，低于最后一点得最后一点的分。',
+    fields: [
+      { kind: 'num', path: 'part2.closureRule.handedFull', label: '没解决但交接完整，算', unit: '个', step: 0.1 },
+      { kind: 'num', path: 'part2.closureRule.handedPart', label: '有交接但不完整，算', unit: '个', step: 0.1 },
+      { kind: 'tiers', path: 'part2.closureRule.points', label: '闭环率计分点', cols: CLOSURE_POINT }
     ]
   },
   {
