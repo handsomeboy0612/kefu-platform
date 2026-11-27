@@ -8,7 +8,7 @@ import { getDeptSetting, isSectionConfigured } from '../settings'
 import { deptProjectId } from '../members'
 import { archiveGet, fetchGroupMembers, fetchGroups, type ArchiveHealth } from '../services/archive'
 import { describeFetchError } from '../services/salesmartly'
-import { getGroupConfig, parseKeywords, saveGroupConfig, type GroupConfig } from '../group/config'
+import { getGroupConfig, parseDuty, parseKeywords, saveGroupConfig, type GroupConfig } from '../group/config'
 import { GroupBusyError, groupProgress, startGroupSync } from '../group/sync'
 import { refreshIssueSessions } from '../issues/sessions'
 
@@ -73,12 +73,22 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
       roomFilterMode: b.roomFilterMode === 'manual' ? 'manual' : 'keyword',
       roomKeyword: String(b.roomKeyword || '').trim().slice(0, 50),
       excludeKeywords: parseKeywords(b.excludeKeywords),
+      duty: parseDuty(b.duty),
       selectedRooms: Array.isArray(b.selectedRooms) ? b.selectedRooms.map(String).slice(0, 2000) : [],
       gapMin
     }
     if (c.roomFilterMode === 'manual' && !c.selectedRooms.length) throw new HttpError(400, '手动选群至少要选一个群')
+    if (Array.isArray(b.duty) && c.duty.length !== b.duty.length) throw new HttpError(400, '班次的时间要写成 HH:MM（如 09:00），开始和结束不能一样')
+    const projectId = await deptProjectId(dept)
+    for (const s of c.duty) {
+      if (!s.sysUserId) continue
+      const [m] = await query('SELECT 1 FROM members WHERE project_id = ? AND sys_user_id = ? AND department_id = ?', [projectId, s.sysUserId, dept.id])
+      if (!m) throw new HttpError(400, `班次「${s.name || s.start}」的负责人不是本部门成员`)
+    }
     await saveGroupConfig(dept, c, req.user!.username)
     await audit(req, 'group_config', dept.code, { ...c, selectedRooms: c.selectedRooms.length }, dept.id)
+    // 当班负责人变了：没人接手的群问题重新归人
+    await refreshIssueSessions(dept).catch((e) => console.error('[issues] 群问题写进会话记录失败', e))
     return { success: true, data: c }
   })
 
@@ -101,7 +111,7 @@ export async function groupRoutes(app: FastifyInstance): Promise<void> {
         internal = ms.length > 0 && ms.every((m) => m.is_staff === 1)
       } catch { /* 拉不到成员按非内部群 */ }
       // 群名含排除关键词（按现在保存的设置）
-      const excluded = gc.roomFilterMode === 'keyword' && gc.excludeKeywords.some((k) => (g.room_name || '').includes(k))
+      const excluded = gc.roomFilterMode === 'keyword' && gc.excludeKeywords.some((k) => (g.room_name || '').toLowerCase().includes(k.toLowerCase()))
       out.push({ roomId: g.room_id, roomName: g.room_name, memberCount: g.member_count, msgTotal: g.msg_total, lastMsgAt: g.last_msg_at, internal, excluded })
     }
     return { success: true, data: out }

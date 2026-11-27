@@ -5,7 +5,8 @@ import { api } from '../../api'
 import { useAuth } from '../../auth'
 import { fmtTime } from '../../utils'
 
-interface GroupConfig { roomFilterMode: 'keyword' | 'manual'; roomKeyword: string; excludeKeywords: string[]; selectedRooms: string[]; gapMin: number }
+interface DutyShift { name: string; start: string; end: string; sysUserId: number }
+interface GroupConfig { roomFilterMode: 'keyword' | 'manual'; roomKeyword: string; excludeKeywords: string[]; selectedRooms: string[]; gapMin: number; duty: DutyShift[] }
 interface Run {
   id: number; trigger: string; triggeredBy: string; rangeBegin: number; rangeEnd: number; status: string
   startedAt: number; finishedAt: number; error: string | null
@@ -93,6 +94,13 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
   const [saving, setSaving] = useState(false)
   const [kw, setKw] = useState('')
   const [exText, setExText] = useState((config.excludeKeywords || []).join('，'))
+  const [members, setMembers] = useState<Array<{ sysUserId: number; nickname: string; participate: boolean }>>([])
+  useEffect(() => {
+    api<{ members: Array<{ sysUserId: number; nickname: string; participate: boolean }> }>('/api/sessions/filters', { query: { dept: deptCode } })
+      .then((d) => setMembers(d.members)).catch(() => setMembers([]))
+  }, [deptCode])
+  const duty = c.duty || []
+  const setDuty = (list: DutyShift[]): void => setC((p) => ({ ...p, duty: list }))
   useEffect(() => { setC(config); setExText((config.excludeKeywords || []).join('，')) }, [config])
   useEffect(() => { setC((p) => ({ ...p, excludeKeywords: exText.split(/[,，、\s]+/).map((x) => x.trim()).filter(Boolean) })) }, [exText])
   useEffect(() => {
@@ -102,8 +110,12 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
   const included = useMemo(() => {
     if (!rooms) return new Set<string>()
     if (c.roomFilterMode === 'manual') return new Set(c.selectedRooms)
-    const ex = (c.excludeKeywords || []).filter(Boolean)
-    return new Set(rooms.filter((r) => !r.internal && (!c.roomKeyword || r.roomName.includes(c.roomKeyword)) && !ex.some((k) => r.roomName.includes(k))).map((r) => r.roomId))
+    const ex = (c.excludeKeywords || []).filter(Boolean).map((k) => k.toLowerCase())
+    const kw = (c.roomKeyword || '').toLowerCase()
+    return new Set(rooms.filter((r) => {
+      const n = (r.roomName || '').toLowerCase()
+      return !r.internal && (!kw || n.includes(kw)) && !ex.some((k) => n.includes(k))
+    }).map((r) => r.roomId))
   }, [rooms, c])
 
   const save = async (): Promise<void> => {
@@ -142,6 +154,26 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
           <span>群聊停多久开始整理<em>一个群停下这么久没人说话，AI 就把这个群当天的聊天整理成群问题；之后又有人说话，停下来再重新整理（默认 30 分钟）</em></span>
           <InputNumber value={c.gapMin} min={5} max={240} suffix="分钟" onChange={(v) => setC({ ...c, gapMin: Number(v) || 30 })} style={{ width: 140 }} />
         </div>
+        <div className="form-actions"><Button theme="solid" loading={saving} onClick={() => void save()}>保存</Button></div>
+      </div>
+      <div className="panel">
+        <div className="panel-title">当班负责人</div>
+        <div className="panel-desc">
+          按《技术支持部绩效考核标准》：没人接手的群问题，按客户提问的时间归当班负责人（记 1 个问题，没解决闭环按 0 算）。
+          时间写成 HH:MM，结束早于开始表示跨零点（如 18:00 ~ 02:00）。没配的时段，没人接手的问题不归任何人。改完点上面的「保存」，马上生效。
+        </div>
+        {duty.map((s, i) => (
+          <div key={i} className="rule-tier-row">
+            <Input value={s.name} prefix="班次" placeholder="白班" style={{ width: 160 }} onChange={(v) => setDuty(duty.map((x, j) => (j === i ? { ...x, name: v } : x)))} />
+            <Input value={s.start} prefix="从" placeholder="09:00" style={{ width: 130 }} onChange={(v) => setDuty(duty.map((x, j) => (j === i ? { ...x, start: v.trim() } : x)))} />
+            <Input value={s.end} prefix="到" placeholder="18:00" style={{ width: 130 }} onChange={(v) => setDuty(duty.map((x, j) => (j === i ? { ...x, end: v.trim() } : x)))} />
+            <Select value={s.sysUserId || undefined} placeholder="负责人" style={{ width: 180 }} filter
+              optionList={members.map((m) => ({ value: m.sysUserId, label: m.participate ? m.nickname : `${m.nickname}（不参与考核）` }))}
+              onChange={(v) => setDuty(duty.map((x, j) => (j === i ? { ...x, sysUserId: Number(v) || 0 } : x)))} />
+            <Button theme="borderless" type="tertiary" onClick={() => setDuty(duty.filter((_, j) => j !== i))}>删除</Button>
+          </div>
+        ))}
+        <Button theme="borderless" size="small" onClick={() => setDuty([...duty, { name: '', start: '', end: '', sysUserId: 0 }])}>加一个班次</Button>
         <div className="form-actions"><Button theme="solid" loading={saving} onClick={() => void save()}>保存</Button></div>
       </div>
       <div className="panel">

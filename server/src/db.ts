@@ -299,6 +299,18 @@ const SCHEMA: string[] = [
     PRIMARY KEY (department_id, room_id, day)
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
 
+  // 主管对 AI 标出的客户反馈（投诉 / 抱怨 / 表扬）的判定，按消息对应，AI 重跑也不会丢
+  `CREATE TABLE IF NOT EXISTS wg_feedback_marks (
+    department_id INT UNSIGNED NOT NULL,
+    msg_id        VARCHAR(128) NOT NULL,
+    decision      VARCHAR(8)   NOT NULL,             -- ok = 算 / no = 不算
+    kind          VARCHAR(12)  NULL,                 -- 主管改的类型（complaint / mild / praise），NULL = 按 AI 的
+    target_user   VARCHAR(128) NULL,                 -- 主管改的针对谁（企微 user_id），NULL = 按 AI 的
+    updated_by    VARCHAR(64)  NOT NULL DEFAULT '',
+    updated_at    BIGINT       NOT NULL,
+    PRIMARY KEY (department_id, msg_id)
+  ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`,
+
   // 主管对问题的核对和修改（按群 + 问题第一条消息对应，AI 重跑也不会丢）
   `CREATE TABLE IF NOT EXISTS wg_issue_marks (
     department_id    INT UNSIGNED NOT NULL,
@@ -379,6 +391,20 @@ export async function ensureSchema(): Promise<void> {
   await addColumn('ss_sessions', 'issue_difficulty', 'issue_difficulty TINYINT NOT NULL DEFAULT 1 AFTER issue_sync_gap_sec')
   // 主管标的难度（NULL = 没标，按简单算）；状态加了「交接完整 handed / 交接不完整 handed_part」
   await addColumn('wg_issue_marks', 'difficulty', 'difficulty TINYINT NULL AFTER override_status')
+  // 群问题（提示词 issue-v4）：交接（前一处理人、交接情况）、依赖上游、AI 建议的难度、AI 标出的客户反馈
+  await addColumn('wg_issues', 'handed_from', "handed_from VARCHAR(128) NOT NULL DEFAULT '' AFTER helper_ids")
+  await addColumn('wg_issues', 'handover', "handover VARCHAR(8) NOT NULL DEFAULT '' AFTER handed_from")
+  await addColumn('wg_issues', 'upstream', 'upstream TINYINT NOT NULL DEFAULT 0 AFTER handover')
+  await addColumn('wg_issues', 'difficulty_ai', 'difficulty_ai TINYINT NOT NULL DEFAULT 1 AFTER upstream')
+  await addColumn('wg_issues', 'feedback', 'feedback JSON NULL AFTER evidence')
+  await addColumn('wg_issue_marks', 'override_handed_from', 'override_handed_from VARCHAR(128) NULL AFTER difficulty')
+  await addColumn('wg_issue_marks', 'override_handover', 'override_handover VARCHAR(8) NULL AFTER override_handed_from')
+  await addColumn('wg_issue_marks', 'override_upstream', 'override_upstream TINYINT NULL AFTER override_handover')
+  // 会话记录里的群问题：交接人（成员）、交接情况、依赖上游、是不是当班负责人兜底
+  await addColumn('ss_sessions', 'issue_handed_from_sys', 'issue_handed_from_sys BIGINT NOT NULL DEFAULT 0 AFTER issue_difficulty')
+  await addColumn('ss_sessions', 'issue_handover', "issue_handover VARCHAR(8) NOT NULL DEFAULT '' AFTER issue_handed_from_sys")
+  await addColumn('ss_sessions', 'issue_upstream', 'issue_upstream TINYINT NOT NULL DEFAULT 0 AFTER issue_handover')
+  await addColumn('ss_sessions', 'issue_duty', 'issue_duty TINYINT NOT NULL DEFAULT 0 AFTER issue_upstream')
   // 按时间切段的群会话（会话 ID wg_ 开头，source 是 wg 或 wgr；群问题是 wgi_ 开头）2026-11-26 弃用，删掉
   const OLD = "s.source IN ('wg', 'wgr') AND s.session_id LIKE 'wg\\_%'"
   await execute(`DELETE m FROM ss_messages m JOIN ss_sessions s ON s.project_id = m.project_id AND s.session_id = m.session_id WHERE ${OLD}`)

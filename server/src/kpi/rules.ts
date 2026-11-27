@@ -96,7 +96,7 @@ export interface TechRules {
      * 处理时效：从首次响应到给出解决方案。fullSec 内处理完得满分；超过了但处理人每 syncSec 内至少同步一次进度
      * （只回「稍等」「还在看」不算），得 syncedPercent%；中间没同步得 0。每个已解决的问题单独打分再平均
      */
-    timeliness: { fullSec: number; syncSec: number; syncedPercent: number }
+    timeliness: { fullSec: number; syncSec: number; syncedPercent: number; upstreamPercent: number }
     /**
      * 问题闭环率 = 各问题计分之和 ÷ 问题数（判断不了的确认前不算）：自己解决 1，没解决但交接完整 handedFull，
      * 交接不完整 handedPart，没交接 0。points：闭环率达到 rate% 得该项分值的 percent%，点之间线性，低于最后一点按最后一点
@@ -146,7 +146,7 @@ export const TECH_DEFAULT_RULES: TechRules = {
       { maxSec: 300, percent: 50 }, { maxSec: 480, percent: 25 }
     ],
     difficulty: { normal: 1.5, hard: 2 },
-    timeliness: { fullSec: 3600, syncSec: 3600, syncedPercent: 70 },
+    timeliness: { fullSec: 3600, syncSec: 3600, syncedPercent: 70, upstreamPercent: 100 },
     closureRule: {
       handedFull: 0.8, handedPart: 0.4,
       points: [{ rate: 95, percent: 100 }, { rate: 90, percent: 80 }, { rate: 80, percent: 50 }, { rate: 70, percent: 0 }]

@@ -55,6 +55,11 @@ interface IssueRow {
   first_reply_at: number
   resolved_at: number
   created_at: number
+  handed_from?: string
+  handover?: string
+  upstream?: number
+  difficulty_ai?: number
+  feedback?: unknown
 }
 
 export interface AiIssue {
@@ -68,6 +73,30 @@ export interface AiIssue {
   status: 'resolved' | 'unresolved' | 'unknown'
   resolved_msg_id: string
   evidence: string
+  /** 交接前的处理人（企微 user_id），没有交接是 '' */
+  handed_from_id: string
+  /** full 交接完整 / part 不完整 / none 没交接；没有交接是 '' */
+  handover: '' | 'full' | 'part' | 'none'
+  /** 要靠上游 / 官方 / 研发才能解决 */
+  upstream: boolean
+  difficulty: 'simple' | 'normal' | 'hard'
+  feedback: AiFeedback[]
+}
+
+/** AI 标出的客户反馈（主管确认后计入第二项满意度） */
+export interface AiFeedback { type: 'complaint' | 'mild' | 'praise'; msg_id: string; target_id: string; own_fault: boolean; reason: string }
+/** 存进 wg_issues.feedback 的：再带上消息时间和原话 */
+export interface StoredFeedback extends AiFeedback { at: number; quote: string }
+
+const DIFF: Record<string, number> = { simple: 1, normal: 2, hard: 3 }
+/** 只是派单 / 催一下的话（「跟进一下」「看下」），说这种话的人不算处理过 */
+const DISPATCH_RE = /^(@\S*)*(跟进|跟进一下|跟进下|看下|看一下|看看|帮忙看下|帮忙看一下|处理一下|处理下|帮忙处理下|收到|好的|ok|稍等)*[。.!！~～]*$/i
+/** 交接人得实际处理过：在这个问题的消息（含前几天的）里对客户说过实质的话；只 @ 同事派单、只说「跟进一下」的不算 */
+export const handledBy = (msgs: Msg[], who: string, staffIds: Set<string>): boolean =>
+  !!who && msgs.some((m) => m.sender_id === who && !dispatchOnly(m, staffIds) && !DISPATCH_RE.test(norm(m.content)))
+const dispatchOnly = (m: Msg, staffIds: Set<string>): boolean => {
+  const ats = json<Array<{ user_id: string }>>(m.at_list, []).map((a) => a.user_id).filter(Boolean)
+  return ats.length > 0 && ats.every((id) => staffIds.has(id))
 }
 
 const pad = (n: number): string => String(n).padStart(2, '0')
@@ -141,7 +170,9 @@ async function buildInput(deptId: number, roomId: string, roomName: string, day:
   for (const c of carried) {
     const last = (await messagesByIds(json<string[]>(c.message_ids, []))).slice(-5)
     for (const m of last) if (m.is_staff && m.sender_id) staffIds.add(m.sender_id)
-    oldParts.push(`### 旧问题 #${c.id}（${c.day} 开始，现在${c.status === 'resolved' ? '已解决' : c.status === 'unresolved' ? '未解决' : '判断不了'}）：${c.summary}\n${last.map((m) => line(m, nicks)).join('\n')}`)
+    if (c.handler_user_id) staffIds.add(c.handler_user_id)
+    const who = c.handler_user_id ? `${nicks.get(c.handler_user_id) || c.handler_user_id}（ID: ${c.handler_user_id}）` : '没人处理'
+    oldParts.push(`### 旧问题 #${c.id}（${c.day} 开始，现在${c.status === 'resolved' ? '已解决' : c.status === 'unresolved' ? '未解决' : '判断不了'}，处理人：${who}）：${c.summary}\n${last.map((m) => line(m, nicks)).join('\n')}`)
   }
   const staffList = [...staffIds].map((id) => `- ${nicks.get(id) || id}（ID: ${id}）`).join('\n')
   const text = [
@@ -168,7 +199,8 @@ function validate(raw: unknown, b: Built): { issues: AiIssue[] } | { error: stri
     const clean = (v: unknown): string => String(v ?? '').trim().replace(/^m:/i, '')
     const ids: string[] = (Array.isArray(x.message_ids) ? x.message_ids : []).map(clean)
     const ref = String(x.ref ?? 'new').trim().replace(/^#/, '') || 'new'
-    if (!ids.length) return { error: `${tag} 没有消息编号` }
+    // 一条消息都没有的问题没有意义，跳过（AI 偶尔会多输出一个空问题）
+    if (!ids.length) continue
     for (const id of ids) if (!byId.has(id)) return { error: `${tag} 的消息编号 ${id} 不是今天这个群的消息` }
     // 同一条消息被分到了好几个问题：只留在第一个问题里（不编造任何东西，只是去重）；去完没消息了就跳过这个问题
     const dup = ids.filter((id) => used.has(id))
@@ -197,6 +229,30 @@ function validate(raw: unknown, b: Built): { issues: AiIssue[] } | { error: stri
       const ne = norm(evidence)
       if (!msgs.some((m) => norm(m.content).includes(ne))) return { error: `${tag} 的依据原话「${evidence.slice(0, 30)}」在消息里找不到` }
     }
+    // 交接：前一处理人得是员工、和处理人不同；交接情况不对按「没交接」
+    let handedFrom = handler ? String(x.handed_from_id || '').trim() : ''
+    if (handedFrom && (handedFrom === handler || !b.staffIds.has(handedFrom))) handedFrom = ''
+    if (handedFrom) {
+      const oldHandler = ref !== 'new' ? b.carried.find((c) => String(c.id) === ref)?.handler_user_id : ''
+      const handled = handedFrom === oldHandler || msgs.some((m) => m.sender_id === handedFrom && !dispatchOnly(m, b.staffIds) && !DISPATCH_RE.test(norm(m.content)))
+      if (!handled) handedFrom = ''
+    }
+    const ho = String(x.handover || '').trim()
+    const handover = (handedFrom ? (['full', 'part', 'none'].includes(ho) ? ho : 'none') : '') as AiIssue['handover']
+    const diff = String(x.difficulty || '').trim()
+    // 客户反馈：只留这个问题里客户发的消息；针对的人不是员工就按处理人
+    const fb: AiFeedback[] = []
+    for (const f of Array.isArray(x.feedback) ? (x.feedback as Array<Record<string, unknown>>) : []) {
+      const mid = clean(f?.msg_id)
+      const type = String(f?.type || '').trim()
+      const m = byId.get(mid)
+      if (!m || !ids.includes(mid) || !isCustomer(m) || !['complaint', 'mild', 'praise'].includes(type) || fb.some((y) => y.msg_id === mid)) continue
+      const target = String(f?.target_id || '').trim()
+      fb.push({
+        type: type as AiFeedback['type'], msg_id: mid, target_id: b.staffIds.has(target) ? target : handler,
+        own_fault: type === 'praise' ? true : f?.own_fault === true || f?.own_fault === 'true', reason: String(f?.reason || '').slice(0, 200)
+      })
+    }
     out.push({
       ref,
       summary: String(x.summary || '').slice(0, 500),
@@ -207,7 +263,12 @@ function validate(raw: unknown, b: Built): { issues: AiIssue[] } | { error: stri
       helper_ids: (Array.isArray(x.helper_ids) ? x.helper_ids : []).map(String).filter((h) => b.staffIds.has(h) && h !== handler),
       status: status as AiIssue['status'],
       resolved_msg_id: status === 'resolved' ? resolvedId : '',
-      evidence
+      evidence,
+      handed_from_id: handedFrom,
+      handover,
+      upstream: x.upstream === true || x.upstream === 'true',
+      difficulty: (['simple', 'normal', 'hard'].includes(diff) ? diff : 'simple') as AiIssue['difficulty'],
+      feedback: fb
     })
   }
   return { issues: out }
@@ -275,17 +336,25 @@ async function applyDay(dept: Department, roomId: string, roomName: string, day:
   const created: number[] = []
   const prev: IssueRow[] = []
   const byId = new Map(b.msgs.map((m) => [m.msg_id, m]))
+  // 客户反馈带上消息时间和原话存起来（主管确认、绩效按时间段统计用）
+  const stored = (fb: AiFeedback[] | undefined): StoredFeedback[] => (fb || []).map((f) => {
+    const m = byId.get(f.msg_id)
+    return { ...f, at: m ? Number(m.send_time) : 0, quote: (m?.content || '').slice(0, 300) }
+  })
   for (const x of issues) {
     const own = x.message_ids.map((id) => byId.get(id)!).filter(Boolean)
     if (x.ref === 'new') {
       const t = timesOf(own, x.handler_id, x.resolved_msg_id, b.staffIds)
+      if (x.handed_from_id && !handledBy(own, x.handed_from_id, b.staffIds)) { x.handed_from_id = ''; x.handover = '' }
       const anchor = [...own].sort((a, b2) => a.send_time - b2.send_time)[0].msg_id
       const res = await execute(
         `INSERT INTO wg_issues (department_id, room_id, room_name, day, updated_day, anchor_msg_id, summary, customer_ids, message_ids,
-           handler_user_id, handler_reason, helper_ids, status, resolved_msg_id, evidence, first_customer_at, first_reply_at, resolved_at, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?)`,
+           handler_user_id, handler_reason, helper_ids, handed_from, handover, upstream, difficulty_ai, status, resolved_msg_id, evidence, feedback,
+           first_customer_at, first_reply_at, resolved_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), CAST(? AS JSON), ?, ?, CAST(? AS JSON), ?, ?, ?, ?, ?, ?, ?, CAST(? AS JSON), ?, ?, ?, ?)`,
         [dept.id, roomId, roomName.slice(0, 255), day, day, anchor, x.summary, JSON.stringify(x.customer_ids), JSON.stringify(x.message_ids),
-          x.handler_id, x.handler_reason, JSON.stringify(x.helper_ids), x.status, x.resolved_msg_id, x.evidence,
+          x.handler_id, x.handler_reason, JSON.stringify(x.helper_ids), x.handed_from_id || '', x.handover || '', x.upstream ? 1 : 0, DIFF[x.difficulty] || 1,
+          x.status, x.resolved_msg_id, x.evidence, JSON.stringify(stored(x.feedback)),
           t.first_customer_at, t.first_reply_at, t.resolved_at, now()]
       )
       created.push(res.insertId)
@@ -297,12 +366,23 @@ async function applyDay(dept: Department, roomId: string, roomName: string, day:
       const all = await messagesByIds(ids)
       const handler = x.handler_id || old.handler_user_id
       const t = timesOf(all, handler, x.resolved_msg_id, b.staffIds)
+      // 交接：今天判出了交接就用今天的；处理人没换就沿用以前的；换了人但 AI 说不算交接，就没有交接
+      const sameHandler = handler === old.handler_user_id
+      let handedFrom = x.handed_from_id || (sameHandler ? old.handed_from || '' : '')
+      let handover = x.handed_from_id ? x.handover : sameHandler ? old.handover || '' : ''
+      if (handedFrom && !handledBy(all, handedFrom, b.staffIds)) { handedFrom = ''; handover = '' }
+      // 客户反馈：以前的加上今天的（同一条消息只留一次）
+      const oldFb = json<StoredFeedback[]>(old.feedback, [])
+      const fb = [...oldFb, ...stored(x.feedback).filter((f) => !oldFb.some((o) => o.msg_id === f.msg_id))]
       await execute(
         `UPDATE wg_issues SET updated_day = ?, summary = ?, customer_ids = CAST(? AS JSON), message_ids = CAST(? AS JSON), handler_user_id = ?,
-           handler_reason = ?, helper_ids = CAST(? AS JSON), status = ?, resolved_msg_id = ?, evidence = ?, first_customer_at = ?, first_reply_at = ?, resolved_at = ?
+           handler_reason = ?, helper_ids = CAST(? AS JSON), handed_from = ?, handover = ?, upstream = ?, difficulty_ai = ?,
+           status = ?, resolved_msg_id = ?, evidence = ?, feedback = CAST(? AS JSON), first_customer_at = ?, first_reply_at = ?, resolved_at = ?
          WHERE id = ?`,
         [day, x.summary || old.summary, JSON.stringify([...new Set([...json<string[]>(old.customer_ids, []), ...x.customer_ids])]), JSON.stringify(ids),
-          handler, x.handler_reason || old.handler_reason, JSON.stringify(x.helper_ids), x.status, x.resolved_msg_id, x.evidence || old.evidence,
+          handler, x.handler_reason || old.handler_reason, JSON.stringify(x.helper_ids), handedFrom, handover,
+          x.upstream || Number(old.upstream) ? 1 : 0, Math.max(DIFF[x.difficulty] || 1, Number(old.difficulty_ai) || 1),
+          x.status, x.resolved_msg_id, x.evidence || old.evidence, JSON.stringify(fb),
           t.first_customer_at, t.first_reply_at, t.resolved_at, old.id]
       )
     }
@@ -323,10 +403,12 @@ async function rollbackFrom(deptId: number, roomId: string, day: string): Promis
       for (const p of json<IssueRow[]>(r.prev_states, [])) {
         await conn.query(
           `UPDATE wg_issues SET updated_day = ?, summary = ?, customer_ids = CAST(? AS JSON), message_ids = CAST(? AS JSON), handler_user_id = ?,
-             handler_reason = ?, helper_ids = CAST(? AS JSON), status = ?, resolved_msg_id = ?, evidence = ?, first_customer_at = ?, first_reply_at = ?, resolved_at = ?
+             handler_reason = ?, helper_ids = CAST(? AS JSON), handed_from = ?, handover = ?, upstream = ?, difficulty_ai = ?,
+             status = ?, resolved_msg_id = ?, evidence = ?, feedback = CAST(? AS JSON), first_customer_at = ?, first_reply_at = ?, resolved_at = ?
            WHERE id = ?`,
           [p.updated_day, p.summary, JSON.stringify(json(p.customer_ids, [])), JSON.stringify(json(p.message_ids, [])), p.handler_user_id,
-            p.handler_reason, JSON.stringify(json(p.helper_ids, [])), p.status, p.resolved_msg_id, p.evidence, p.first_customer_at, p.first_reply_at, p.resolved_at, p.id]
+            p.handler_reason, JSON.stringify(json(p.helper_ids, [])), p.handed_from || '', p.handover || '', Number(p.upstream) || 0, Number(p.difficulty_ai) || 1,
+            p.status, p.resolved_msg_id, p.evidence, JSON.stringify(json(p.feedback, [])), p.first_customer_at, p.first_reply_at, p.resolved_at, p.id]
         )
       }
       await conn.query('UPDATE wg_issue_runs SET applied = 0 WHERE department_id = ? AND room_id = ? AND day = ?', [deptId, roomId, r.day])
@@ -339,15 +421,18 @@ const running = new Map<string, AnalyzeProgress>()
 export const analyzeProgress = (deptCode: string): AnalyzeProgress | null => running.get(deptCode) ?? null
 
 /** 分析一个群从 from 到 to 的每一天（按天顺序，带缓存和回滚） */
-async function analyzeRoom(dept: Department, ai: AISettings, roomId: string, roomName: string, from: string, to: string, force: boolean, quietSec: number, p: AnalyzeProgress): Promise<void> {
+async function analyzeRoom(dept: Department, ai: AISettings, roomId: string, roomName: string, from: string, to: string, forceRange: boolean, quietSec: number, p: AnalyzeProgress): Promise<void> {
+  // 改了某天，后面各天都会被撤回，所以不管选到哪天，都一直重放到今天（输入没变的直接用缓存，不调 AI）；force 只对选的那段
+  const today = dayOf(now())
   const [before] = await query<{ chain_hash: string; out_hash: string }>(
     'SELECT chain_hash, out_hash FROM wg_issue_runs WHERE department_id = ? AND room_id = ? AND day < ? AND applied = 1 ORDER BY day DESC LIMIT 1',
     [dept.id, roomId, from]
   )
   let prevChain = before?.chain_hash || ''
   let prevOut = before?.out_hash || ''
-  if (force) await rollbackFrom(dept.id, roomId, from)
-  for (let day = from; day <= to; day = addDays(day, 1)) {
+  if (forceRange) await rollbackFrom(dept.id, roomId, from)
+  for (let day = from; day <= today; day = addDays(day, 1)) {
+    const force = forceRange && day <= to
     const msgs = await dayMessages(roomId, day)
     const [run] = await query<{ chain_hash: string; out_hash: string; status: string; output: unknown; applied: number; attempts: number }>(
       'SELECT chain_hash, out_hash, status, output, applied, attempts FROM wg_issue_runs WHERE department_id = ? AND room_id = ? AND day = ?',

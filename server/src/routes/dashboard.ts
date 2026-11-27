@@ -11,6 +11,7 @@ import { query } from '../db'
 import { deptProjectId } from '../members'
 import { getRules, TECH_DEFAULT_RULES, type TechRules } from '../kpi/rules'
 import { closureValue } from '../kpi/calc-tech'
+import { issueCredits } from '../kpi/data'
 
 const MAX_DAYS = 93
 
@@ -27,32 +28,32 @@ const shapeGroup = (a: GroupAgg): GroupShape => ({
 /** 对公群：本部门成员处理的群问题（和绩效第二项同一份数据） */
 async function groupBlock(dept: Department, projectId: string, begin: number, end: number, onlyAssessed: boolean): Promise<Record<string, unknown>> {
   const P = dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2 : TECH_DEFAULT_RULES.part2
-  const rows = await query<{ uid: number; name: string; participate: number; active: number; at: number; status: string; first: number | null; resolve: number | null }>(
-    `SELECT s.sys_user_id uid, m.nickname name, m.participate, m.active, s.assign_time at, s.issue_status status, s.issue_first_sec first, s.issue_resolve_sec resolve
-     FROM ss_sessions s JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
-     WHERE s.project_id = ? AND s.source = 'wg' AND s.assign_time BETWEEN ? AND ?${onlyAssessed ? ' AND m.participate = 1 AND m.active = 1' : ''}`,
-    [dept.id, projectId, begin, end]
-  )
+  const credits = (await issueCredits(projectId, dept.id, begin, end)).filter((c) => !onlyAssessed || c.participate)
   const total = blankAgg()
   const byDay = new Map<string, GroupAgg>()
   const byMember = new Map<number, GroupAgg & { name: string; participate: boolean }>()
   const pad = (n: number): string => String(n).padStart(2, '0')
-  for (const r of rows) {
-    const d = new Date(Number(r.at) * 1000)
+  for (const c of credits) {
+    const d = new Date(c.at * 1000)
     const day = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
-    const uid = Number(r.uid)
     if (!byDay.has(day)) byDay.set(day, blankAgg())
-    if (!byMember.has(uid)) byMember.set(uid, { ...blankAgg(), name: r.name, participate: !!r.participate && !!r.active })
-    for (const a of [total, byDay.get(day)!, byMember.get(uid)!]) {
-      a.issues++
-      if (r.status === 'resolved') a.resolved++
-      else if (r.status === 'unresolved') a.unresolved++
-      else if (r.status === 'handed' || r.status === 'handed_part') a.handed++
-      else a.unknown++
-      const cv = closureValue(P, r.status)
+    if (!byMember.has(c.sysUserId)) byMember.set(c.sysUserId, { ...blankAgg(), name: c.name, participate: c.participate })
+    const t = c.thread
+    const handover = t.kind === 'handover'
+    // 合计和每天：一个问题只算一次（交接出去的那一份不再算）；按人：交接出去的那一份只算闭环率和「交接」
+    for (const a of handover ? [byMember.get(c.sysUserId)!] : [total, byDay.get(day)!, byMember.get(c.sysUserId)!]) {
+      if (handover) a.handed++
+      else {
+        a.issues++
+        if (t.status === 'resolved') a.resolved++
+        else if (t.status === 'unresolved') a.unresolved++
+        else if (t.status === 'handed' || t.status === 'handed_part') a.handed++
+        else a.unknown++
+        if (t.firstSec != null) a.first.push(t.firstSec)
+        if (t.status === 'resolved' && t.resolveSec != null) a.resolve.push(t.resolveSec)
+      }
+      const cv = closureValue(P, t.status)
       if (cv !== null) a.closure.push(cv)
-      if (r.first != null) a.first.push(Number(r.first))
-      if (r.status === 'resolved' && r.resolve != null) a.resolve.push(Number(r.resolve))
     }
   }
   // 没有群问题的天补 0，折线不会把中间空着的天连过去

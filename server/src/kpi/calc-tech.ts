@@ -67,6 +67,10 @@ export interface TechPart2 {
   /** 没解决但交接了（完整 / 不完整） */
   handedCnt: number
   unknownCnt: number
+  /** 交接给别人、别人接着处理的问题数 */
+  handedOutCnt: number
+  /** 群里 AI 标出、主管确认的投诉 / 抱怨 / 表扬（已经加进满意度） */
+  feedback: { complaint: number; mild: number; praise: number }
   closureRate: number | null
   avgResolveSec: number | null
 }
@@ -92,7 +96,17 @@ export interface TechKpiResult {
  * 对公群里的一个群问题（或规则群会话）：首响 / 均响（秒）。群问题另有：状态（resolved / unresolved / handed / handed_part / unknown）、
  * 处理时长（首次响应 → 解决）、期间最长多久没同步进度、难度（1 简单 / 2 一般 / 3 疑难）
  */
-export interface GroupThread { firstSec: number | null; avgSec: number | null; status?: string; resolveSec?: number | null; syncGapSec?: number | null; difficulty?: number }
+export interface GroupThread {
+  firstSec: number | null; avgSec: number | null; status?: string; resolveSec?: number | null; syncGapSec?: number | null; difficulty?: number
+  /** 依赖上游 / 研发：超时但按时同步了进度，处理时效按 upstreamPercent 算（考核标准：每次都按时同步得 100%） */
+  upstream?: boolean
+  /** 记几个：交接完整的，交接人和最终解决人各 0.5；交接不完整 / 没交接的，交接人 0、解决人 1（考核标准「跨班解决」） */
+  share?: number
+  /** handover = 交接出去的那一份（只算解决问题数和闭环率，不算响应、时效） */
+  kind?: 'handover'
+}
+/** 主管确认的客户反馈（AI 从群里标出来的），加在人工录入的投诉 / 抱怨 / 表扬上 */
+export type GroupFeedback = Record<string, { complaint: number; mild: number; praise: number }>
 /** 对公群每人的群问题（或规则群会话） */
 export type GroupStats = Record<string, { name: string; roomCnt: number; threads: GroupThread[] }>
 
@@ -123,7 +137,8 @@ export function timelinessPct(P: TechRules['part2'], t: GroupThread): number | n
   if (t.status !== 'resolved' || t.resolveSec == null) return null
   const T = P.timeliness
   if (t.resolveSec <= T.fullSec) return 100
-  return t.syncGapSec != null && t.syncGapSec <= T.syncSec ? T.syncedPercent : 0
+  if (t.syncGapSec == null || t.syncGapSec > T.syncSec) return 0
+  return t.upstream ? T.upstreamPercent ?? 100 : T.syncedPercent
 }
 
 /** 一个问题的闭环计分（0 ~ 1）；判断不了的确认前不算（null） */
@@ -296,38 +311,44 @@ function calcPart1(
   }
 }
 
-function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStats[string], teamAvg: number): TechPart2 {
+/** 难度加权、按份数（交接各 0.5）算的问题数 */
+const weightedOf = (P: TechRules['part2'], threads: GroupThread[]): number => threads.reduce((s, t) => s + difficultyWeight(P, t.difficulty) * (t.share ?? 1), 0)
+
+function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStats[string], teamAvg: number, fb: { complaint: number; mild: number; praise: number }): TechPart2 {
   const P = R.part2
   const w = P.weights
-  const threadCnt = wg.threads.length
-  const weightedCnt = wg.threads.reduce((s, t) => s + difficultyWeight(P, t.difficulty), 0)
+  // own = 自己是处理人的问题；交接出去的那一份只算解决问题数和闭环率
+  const own = wg.threads.filter((t) => t.kind !== 'handover')
+  const threadCnt = own.length
+  const weightedCnt = weightedOf(P, wg.threads)
   const vol = volumePct(weightedCnt, teamAvg, isNight ? P.solved.night : P.solved.dayEvening)
   const solved: KpiItem = { full: w.solved, score: (vol.pct / 100) * w.solved }
 
-  const firsts = wg.threads.map((t) => t.firstSec).filter((s): s is number => s !== null)
-  const avgs = wg.threads.map((t) => t.avgSec).filter((s): s is number => s !== null)
+  const firsts = own.map((t) => t.firstSec).filter((s): s is number => s !== null)
+  const avgs = own.map((t) => t.avgSec).filter((s): s is number => s !== null)
   const meanPct = (secs: number[], tiers: ResponseTier[]): number | null =>
     secs.length ? secs.reduce((s, sec) => s + tierPct(sec, tiers), 0) / secs.length : null
   const fp = meanPct(firsts, P.firstRespTiers)
   const ap = meanPct(avgs, P.avgRespTiers)
   const firstResp: KpiItem = { full: w.firstResp, score: fp === null ? null : (fp / 100) * w.firstResp }
   const avgResp: KpiItem = { full: w.avgResp, score: ap === null ? null : (ap / 100) * w.avgResp }
-  const cnt = (s: string): number => wg.threads.filter((t) => t.status === s).length
+  const cnt = (s: string): number => own.filter((t) => t.status === s).length
   const resolvedCnt = cnt('resolved')
   const unresolvedCnt = cnt('unresolved')
   const handedCnt = cnt('handed') + cnt('handed_part')
   const unknownCnt = threadCnt - resolvedCnt - unresolvedCnt - handedCnt
-  const tps = wg.threads.map((t) => timelinessPct(P, t)).filter((x): x is number => x !== null)
+  const tps = own.map((t) => timelinessPct(P, t)).filter((x): x is number => x !== null)
   const timeliness: KpiItem = { full: w.timeliness, score: tps.length ? (tps.reduce((a, b) => a + b, 0) / tps.length / 100) * w.timeliness : null }
   const cvs = wg.threads.map((t) => closureValue(P, t.status)).filter((x): x is number => x !== null)
   const closureRate = cvs.length ? (cvs.reduce((a, b) => a + b, 0) / cvs.length) * 100 : null
   const closure: KpiItem = { full: w.closure, score: closureRate === null ? null : (closurePct(closureRate, P.closureRule.points) / 100) * w.closure }
-  const resolveSecs = wg.threads.filter((t) => t.status === 'resolved').map((t) => t.resolveSec).filter((s): s is number => s != null)
+  const resolveSecs = own.filter((t) => t.status === 'resolved').map((t) => t.resolveSec).filter((s): s is number => s != null)
 
+  // 满意度：人工录入的 + 群里 AI 标出、主管确认的
   const S = P.satisfaction
-  const complaints = m.p2Complaints || 0
-  const satisfaction: KpiItem = { full: w.satisfaction, score: Math.max(0, w.satisfaction - complaints * S.complaint - (m.p2MildComplaints || 0) * S.mild) }
-  const praise = Math.min(S.praiseCap, (m.p2Praise || 0) * S.praise)
+  const complaints = (m.p2Complaints || 0) + fb.complaint
+  const satisfaction: KpiItem = { full: w.satisfaction, score: Math.max(0, w.satisfaction - complaints * S.complaint - ((m.p2MildComplaints || 0) + fb.mild) * S.mild) }
+  const praise = Math.min(S.praiseCap, ((m.p2Praise || 0) + fb.praise) * S.praise)
 
   const items = { solved, firstResp, avgResp, timeliness, closure, satisfaction }
   const base = scale(Object.values(items))
@@ -344,11 +365,11 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
     score, base: r1(base), bonus: vol.bonus, praise, deduction, grade: g.grade, coeff: g.coeff,
     items: { solved: roundItem(solved), firstResp: roundItem(firstResp), avgResp: roundItem(avgResp), timeliness: roundItem(timeliness), closure: roundItem(closure), satisfaction: roundItem(satisfaction) },
     source: 'ai', threadCnt, roomCnt: wg.roomCnt, teamAvgCnt: r1(teamAvg), avgFirstSec: mean(firsts), avgReplySec: mean(avgs),
-    weightedCnt: r1(weightedCnt), resolvedCnt, unresolvedCnt, handedCnt, unknownCnt, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
+    weightedCnt: r1(weightedCnt), resolvedCnt, unresolvedCnt, handedCnt, unknownCnt, handedOutCnt: wg.threads.length - own.length, feedback: fb, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
   }
 }
 
-export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, ManualEntry>, group: GroupStats): TechKpiResult[] {
+export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, ManualEntry>, group: GroupStats, feedback: GroupFeedback = {}): TechKpiResult[] {
   // 大报表里没有、但有群会话的人补一行（第一项按无数据处理）
   const ids = new Set(d.report.map((r) => r.sys_user_id))
   const extra: SsReportRow[] = Object.entries(group)
@@ -368,7 +389,7 @@ export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, Manu
   const p2Rows = rows.filter((r) => groupCnt(r.sys_user_id) > 0)
   const teamAvg1 = teamAverage(p1Rows.map((r) => [d.shiftOf(r.sys_user_id), r.start_session_pv || 0]))
   // 团队平均：用难度加权后的问题数
-  const weighted = (uid: number): number => (group[String(uid)]?.threads || []).reduce((s, t) => s + difficultyWeight(R.part2, t.difficulty), 0)
+  const weighted = (uid: number): number => weightedOf(R.part2, group[String(uid)]?.threads || [])
   const teamAvg2 = teamAverage(p2Rows.map((r) => [d.shiftOf(r.sys_user_id), weighted(r.sys_user_id)]))
   const ts = p1Rows.map(starOf).reduce((a, s) => ({ sum: a.sum + s.sum, cnt: a.cnt + s.cnt }), { sum: 0, cnt: 0 })
   const teamStar = ts.cnt > 0 ? ts.sum / ts.cnt : null
@@ -384,7 +405,7 @@ export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, Manu
       ? calcPart1(r, R, m, isNight, { teamAvg: teamAvg1, star: starOf(r), teamStar, reply: d.reply[key], ai: ai ? { avg: ai.avg, count: ai.count } : null })
       : null
     const wg = group[key]
-    const p2 = wg && wg.threads.length ? calcPart2(R, m, isNight, wg, teamAvg2) : null
+    const p2 = wg && wg.threads.length ? calcPart2(R, m, isNight, wg, teamAvg2, feedback[key] || { complaint: 0, mild: 0, praise: 0 }) : null
 
     const T = R.total
     let num = 0

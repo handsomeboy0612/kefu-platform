@@ -8,6 +8,7 @@ import { createHash } from 'crypto'
 import { execute, now, query } from '../db'
 import { listDepartments, type Department } from '../auth'
 import { deptProjectId } from '../members'
+import { dutyAt, getGroupConfig, type GroupConfig } from '../group/config'
 
 const WG_CHANNEL = -2
 const json = <T>(v: unknown, d: T): T => (v == null ? d : typeof v === 'string' ? (JSON.parse(v) as T) : (v as T))
@@ -16,11 +17,60 @@ const sha = (s: string): string => createHash('sha256').update(s).digest('hex')
 /** 会话 ID：部门 + 群 + 问题第一条消息（重新分析后问题编号会变，第一条消息不变就还是这一行） */
 export const issueSessionId = (deptId: number, roomId: string, anchor: string): string => `wgi_${deptId}_${sha(`${roomId}|${anchor}`).slice(0, 40)}`
 
-interface Row {
+interface Row extends IssueMarkFields {
   id: number; room_id: string; room_name: string; anchor_msg_id: string; summary: string; message_ids: unknown
-  handler_user_id: string; status: string; first_customer_at: number; resolved_at: number; override_handler: string | null; override_status: string | null
-  difficulty: number | null
+  status: string; resolved_at: number
 }
+
+/** 算「现在的」处理人 / 状态 / 难度 / 交接 / 依赖上游要用的字段（wg_issues + wg_issue_marks） */
+export interface IssueMarkFields {
+  handler_user_id: string; status: string; first_customer_at: number
+  handed_from?: string; handover?: string; upstream?: number; difficulty_ai?: number
+  override_handler: string | null; override_status: string | null; difficulty: number | null
+  override_handed_from?: string | null; override_handover?: string | null; override_upstream?: number | null
+}
+
+export interface EffIssue {
+  /** 处理人（企微 user_id）；没人接手是 '' */
+  handler: string
+  /** 没人接手、归当班负责人（SaleSmartly 成员 ID）；0 = 没有 */
+  dutySysUserId: number
+  status: string
+  /** 1 简单 / 2 一般 / 3 疑难：主管标的优先；AI 建议疑难的，主管确认前按一般算（考核标准：疑难由主管确认） */
+  difficulty: number
+  difficultyAi: number
+  difficultyMarked: boolean
+  /** 交接前的处理人（企微 user_id）、交接情况 full / part / none */
+  handedFrom: string
+  handover: string
+  upstream: boolean
+}
+
+const has = (v: unknown): boolean => v !== null && v !== undefined
+
+/** 主管改过的优先，其次 AI 的；AI 没判出处理人、主管也没改的，归当班负责人 */
+export function effective(r: IssueMarkFields, gc: GroupConfig): EffIssue {
+  const handler = has(r.override_handler) ? String(r.override_handler) : r.handler_user_id
+  const dutySysUserId = !has(r.override_handler) && !r.handler_user_id ? dutyAt(gc, Number(r.first_customer_at)) : 0
+  const ai = Number(r.difficulty_ai) || 1
+  const handedFrom = handler ? (has(r.override_handed_from) ? String(r.override_handed_from) : r.handed_from || '') : ''
+  const hoRaw = has(r.override_handover) ? String(r.override_handover) : r.handover || ''
+  return {
+    handler,
+    dutySysUserId,
+    status: r.override_status || r.status,
+    difficulty: has(r.difficulty) ? Number(r.difficulty) : ai === 3 ? 2 : ai,
+    difficultyAi: ai,
+    difficultyMarked: has(r.difficulty),
+    handedFrom: handedFrom && handedFrom !== handler ? handedFrom : '',
+    handover: handedFrom && handedFrom !== handler ? (['full', 'part', 'none'].includes(hoRaw) ? hoRaw : 'none') : '',
+    upstream: has(r.override_upstream) ? !!Number(r.override_upstream) : !!Number(r.upstream)
+  }
+}
+
+/** 查群问题时连上主管修改要带的列（表别名 i = wg_issues，k = wg_issue_marks） */
+export const MARK_COLS = `i.handed_from, i.handover, i.upstream, i.difficulty_ai, k.override_handler, k.override_status, k.difficulty,
+  k.override_handed_from, k.override_handover, k.override_upstream`
 
 export interface IssueMsg { msg_id: string; sender_id: string; is_staff: number; is_self: number; at_list: unknown; content: string; send_time: number }
 export interface IssueMetrics {
@@ -137,7 +187,7 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
   if (!dept.groupChat || !projectId) return { upserted: 0, removed: 0 }
   const issues = await query<Row>(
     `SELECT i.id, i.room_id, i.room_name, i.anchor_msg_id, i.summary, i.message_ids, i.handler_user_id, i.status, i.first_customer_at,
-            i.resolved_at, k.override_handler, k.override_status, k.difficulty
+            i.resolved_at, ${MARK_COLS}
      FROM wg_issues i
      LEFT JOIN wg_issue_marks k ON k.department_id = i.department_id AND k.room_id = i.room_id AND k.anchor_msg_id = i.anchor_msg_id
      WHERE i.department_id = ?`,
@@ -151,17 +201,20 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
     [projectId, dept.id]
   )
   const memberOf = new Map(staff.map((s) => [s.user_id, Number(s.sys_user_id)]))
+  const deptMembers = new Set((await query<{ sys_user_id: number }>('SELECT sys_user_id FROM members WHERE project_id = ? AND department_id = ?', [projectId, dept.id])).map((m) => Number(m.sys_user_id)))
   const ctx = await metricsCtx()
+  const gc = await getGroupConfig(dept)
 
-  const want = new Map<string, { r: Row; handler: string; sysUserId: number; status: string; msgIds: string[]; sig: string }>()
+  const want = new Map<string, { r: Row; e: EffIssue; sysUserId: number; handedFromSys: number; msgIds: string[]; sig: string }>()
   for (const r of issues) {
-    const handler = r.override_handler !== null && r.override_handler !== undefined ? r.override_handler : r.handler_user_id
-    const sysUserId = handler ? memberOf.get(handler) || 0 : 0
+    const e = effective(r, gc)
+    // 处理人是本部门成员的挂到他名下；没人接手的挂到当班负责人名下
+    const sysUserId = e.handler ? memberOf.get(e.handler) || 0 : deptMembers.has(e.dutySysUserId) ? e.dutySysUserId : 0
     if (!sysUserId) continue
-    const status = r.override_status || r.status
+    const handedFromSys = e.handedFrom ? memberOf.get(e.handedFrom) || 0 : 0
     const msgIds = json<string[]>(r.message_ids, [])
-    const sig = sha(JSON.stringify(['m4', r.id, handler, sysUserId, status, Number(r.difficulty || 1), r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
-    want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, handler, sysUserId, status, msgIds, sig })
+    const sig = sha(JSON.stringify(['m5', r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
+    want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, e, sysUserId, handedFromSys: handedFromSys === sysUserId ? 0 : handedFromSys, msgIds, sig })
   }
 
   const have = await query<{ session_id: string; content_sig: string }>(
@@ -190,23 +243,24 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
     const t = now()
     const values = changed.map(([id, w]) => {
       const ms = w.msgIds.map((x) => info.get(x)).filter((x): x is IssueMsg => !!x)
-      const x = issueMetrics(ms, w.handler, ctx, w.status, Number(w.r.resolved_at))
+      const x = issueMetrics(ms, w.e.handler, ctx, w.e.status, Number(w.r.resolved_at))
       const first = x.firstCustomerAt || Number(w.r.first_customer_at) || 0
-      return [projectId, id, 'wg', w.r.room_id.slice(0, 128), w.sig, w.r.id, w.status, (w.r.summary || '').slice(0, 255),
-        x.firstSec, x.avgSec, x.resolveSec, x.syncGapSec, Number(w.r.difficulty) || 1, '',
+      return [projectId, id, 'wg', w.r.room_id.slice(0, 128), w.sig, w.r.id, w.e.status, (w.r.summary || '').slice(0, 255),
+        x.firstSec, x.avgSec, x.resolveSec, x.syncGapSec, w.e.difficulty, w.handedFromSys, w.handedFromSys ? w.e.handover : '', w.e.upstream ? 1 : 0, w.e.handler ? 0 : 1, '',
         (w.r.room_name || w.r.room_id).slice(0, 255), w.sysUserId, WG_CHANNEL, 0, x.start || first, x.end || first, first || x.start, 0, 0, '',
         ms.length, x.customerCnt, x.staffCnt, 1, 0, t]
     })
     for (let i = 0; i < values.length; i += 300) {
       await execute(
         `INSERT INTO ss_sessions (project_id, session_id, source, room_id, content_sig, issue_id, issue_status, issue_summary,
-           issue_first_sec, issue_avg_sec, issue_resolve_sec, issue_sync_gap_sec, issue_difficulty, chat_user_id,
+           issue_first_sec, issue_avg_sec, issue_resolve_sec, issue_sync_gap_sec, issue_difficulty, issue_handed_from_sys, issue_handover, issue_upstream, issue_duty, chat_user_id,
            customer_name, sys_user_id, channel, channel_id, start_time, end_time, assign_time, star_score, quality_score, tags,
            msg_count, user_msg_count, kf_msg_count, msgs_synced, msg_fail, synced_at)
          VALUES ?
          ON DUPLICATE KEY UPDATE content_sig = VALUES(content_sig), issue_id = VALUES(issue_id), issue_status = VALUES(issue_status),
            issue_summary = VALUES(issue_summary), issue_first_sec = VALUES(issue_first_sec), issue_avg_sec = VALUES(issue_avg_sec),
            issue_resolve_sec = VALUES(issue_resolve_sec), issue_sync_gap_sec = VALUES(issue_sync_gap_sec), issue_difficulty = VALUES(issue_difficulty),
+           issue_handed_from_sys = VALUES(issue_handed_from_sys), issue_handover = VALUES(issue_handover), issue_upstream = VALUES(issue_upstream), issue_duty = VALUES(issue_duty),
            customer_name = VALUES(customer_name), sys_user_id = VALUES(sys_user_id),
            start_time = VALUES(start_time), end_time = VALUES(end_time), assign_time = VALUES(assign_time), msg_count = VALUES(msg_count),
            user_msg_count = VALUES(user_msg_count), kf_msg_count = VALUES(kf_msg_count), synced_at = VALUES(synced_at)`,

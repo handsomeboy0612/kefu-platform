@@ -57,7 +57,9 @@ export interface TechPart2 {
   threadCnt: number; roomCnt: number; teamAvgCnt: number; avgFirstSec: number | null; avgReplySec: number | null
   /** ai = 按群问题算；2026-11-26 以前生成的报表没有这个字段，是按时间切段算的 */
   source?: 'ai'
-  weightedCnt?: number; resolvedCnt?: number; unresolvedCnt?: number; handedCnt?: number; unknownCnt?: number; closureRate?: number | null; avgResolveSec?: number | null
+  weightedCnt?: number; resolvedCnt?: number; unresolvedCnt?: number; handedCnt?: number; unknownCnt?: number; handedOutCnt?: number
+  feedback?: { complaint: number; mild: number; praise: number }
+  closureRate?: number | null; avgResolveSec?: number | null
 }
 
 export interface TechResult {

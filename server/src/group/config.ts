@@ -13,9 +13,38 @@ export interface GroupConfig {
   selectedRooms: string[]
   /** 群聊停多久（分钟）开始 AI 整理 */
   gapMin: number
+  /** 值班：每个班次的时间和当班负责人；没人接手的群问题按客户提问时间归当班负责人（考核标准第三部分「归属」） */
+  duty: DutyShift[]
 }
 
-export const GROUP_DEFAULTS: GroupConfig = { roomFilterMode: 'keyword', roomKeyword: '', excludeKeywords: ['云雾API渠道'], selectedRooms: [], gapMin: 30 }
+/** 一个班次：start / end 是 HH:MM（北京时间），end ≤ start 表示跨零点；sysUserId = 当班负责人（SaleSmartly 成员） */
+export interface DutyShift { name: string; start: string; end: string; sysUserId: number }
+
+const HM = /^([01]\d|2[0-3]):[0-5]\d$/
+const mins = (hm: string): number => Number(hm.slice(0, 2)) * 60 + Number(hm.slice(3, 5))
+
+export function parseDuty(v: unknown): DutyShift[] {
+  if (!Array.isArray(v)) return []
+  return v.slice(0, 10).map((x) => {
+    const o = (x || {}) as Record<string, unknown>
+    return { name: String(o.name || '').trim().slice(0, 20), start: String(o.start || ''), end: String(o.end || ''), sysUserId: Math.trunc(Number(o.sysUserId)) || 0 }
+  }).filter((s) => HM.test(s.start) && HM.test(s.end) && s.start !== s.end)
+}
+
+/** 某个时间（秒）的当班负责人；没配置或没对上就是 0 */
+export function dutyAt(c: GroupConfig, sec: number): number {
+  if (!sec || !c.duty.length) return 0
+  const d = new Date(sec * 1000)
+  const t = d.getHours() * 60 + d.getMinutes()
+  for (const s of c.duty) {
+    const a = mins(s.start)
+    const b = mins(s.end)
+    if (a < b ? t >= a && t < b : t >= a || t < b) return s.sysUserId
+  }
+  return 0
+}
+
+export const GROUP_DEFAULTS: GroupConfig = { roomFilterMode: 'keyword', roomKeyword: '', excludeKeywords: ['云雾API渠道'], selectedRooms: [], gapMin: 30, duty: [] }
 
 /** 排除关键词：数组或「逗号 / 空格分开」的文字都行；去重、去空，最多 20 个 */
 export function parseKeywords(v: unknown): string[] {
@@ -26,9 +55,10 @@ export function parseKeywords(v: unknown): string[] {
 /** 这个群算不算对公群（不含「全是员工的内部群」判断，那个要拉群成员，同步时单独判断） */
 export function roomCounted(c: GroupConfig, roomId: string, roomName: string): boolean {
   if (c.roomFilterMode === 'manual') return c.selectedRooms.includes(roomId)
-  const name = roomName || ''
-  if (c.roomKeyword && !name.includes(c.roomKeyword)) return false
-  return !c.excludeKeywords.some((k) => name.includes(k))
+  // 不分大小写（有的群写成「云雾api渠道」）
+  const name = (roomName || '').toLowerCase()
+  if (c.roomKeyword && !name.includes(c.roomKeyword.toLowerCase())) return false
+  return !c.excludeKeywords.some((k) => name.includes(k.toLowerCase()))
 }
 
 const keyOf = (dept: Department): string => `dept:${dept.code}:groupChat`
@@ -43,7 +73,8 @@ export async function getGroupConfig(dept: Department): Promise<GroupConfig> {
     roomKeyword: typeof r.roomKeyword === 'string' ? r.roomKeyword : '',
     excludeKeywords: r.excludeKeywords === undefined ? GROUP_DEFAULTS.excludeKeywords : parseKeywords(r.excludeKeywords),
     selectedRooms: Array.isArray(r.selectedRooms) ? r.selectedRooms.map(String) : [],
-    gapMin: Number(r.gapMin) >= 5 && Number(r.gapMin) <= 240 ? Math.round(Number(r.gapMin)) : 30
+    gapMin: Number(r.gapMin) >= 5 && Number(r.gapMin) <= 240 ? Math.round(Number(r.gapMin)) : 30,
+    duty: parseDuty(r.duty)
   }
 }
 

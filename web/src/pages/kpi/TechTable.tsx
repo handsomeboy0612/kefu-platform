@@ -74,8 +74,10 @@ const TechTable: React.FC<{
             {p.source === 'ai'
               ? <div className="kpi-cell-sub">
                   群问题 {p.threadCnt}{p.weightedCnt != null && p.weightedCnt !== p.threadCnt ? `（难度加权 ${p.weightedCnt}）` : ''}，{p.roomCnt} 个群，团队 {p.teamAvgCnt} · 首响 {fmtSec(p.avgFirstSec)} 均响 {fmtSec(p.avgReplySec)}<br />
-                  解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt}{p.handedCnt ? ` · 交接 ${p.handedCnt}` : ''} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
+                  解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt}{p.handedCnt ? ` · 没解决交接 ${p.handedCnt}` : ''}{p.handedOutCnt ? ` · 交接出去 ${p.handedOutCnt}` : ''} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
                   {p.avgResolveSec != null ? ` · 平均处理 ${fmtSec(p.avgResolveSec)}` : ''}
+                  {p.feedback && (p.feedback.complaint || p.feedback.mild || p.feedback.praise)
+                    ? <><br />群里确认的：投诉 {p.feedback.complaint} · 抱怨 {p.feedback.mild} · 表扬 {p.feedback.praise}</> : null}
                 </div>
               : <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}，旧报表：按时间切段算的）· 首响 {fmtSec(p.avgFirstSec)}</div>}
             <Items items={p.items} names={P2_NAMES} />

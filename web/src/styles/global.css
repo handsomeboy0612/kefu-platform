@@ -1188,3 +1188,10 @@ a.app-nav-item { text-decoration: none; }
 /* ─── 群问题 ───────────────────────────────────── */
 .judge-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; }
 .issue-edit { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding-top: 4px; border-top: 1px solid var(--app-border-1); padding-top: 12px; }
+
+/* 群问题：AI 标出的客户反馈 */
+.fb-row { display: flex; gap: 12px; align-items: flex-start; justify-content: space-between; padding: 10px 0; border-top: 1px solid var(--app-border, #eee); }
+.fb-row:first-of-type { border-top: none; }
+.fb-main { min-width: 0; flex: 1; }
+.fb-quote { margin-left: 8px; font-size: 13px; }
+.fb-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }

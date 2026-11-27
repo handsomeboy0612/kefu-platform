@@ -183,7 +183,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项（对公群技术售后）· 解决问题数', desc: '处理人接手的群问题都算（是否解决由闭环率去算），按难度加权后和团队平均比：简单 ×1，一般、疑难按下面的倍数；难度由主管在「群问题」里标，没标的按简单。',
+    title: '第二项（对公群技术售后）· 解决问题数', desc: '处理人接手的群问题都算（是否解决由闭环率去算），按难度加权后和团队平均比：简单 ×1，一般、疑难按下面的倍数。难度由 AI 建议，主管可在「群问题」里改；AI 建议「疑难」的，主管确认前按一般算。跨班交接完整的，交接人和最终处理人各记 0.5 个；交接不完整或没交接，最终处理人记 1 个。没人接手的归当班负责人（设置 → 对公群）。',
     fields: [
       { kind: 'num', path: 'part2.difficulty.normal', label: '一般问题算几个', unit: '个', step: 0.1 },
       { kind: 'num', path: 'part2.difficulty.hard', label: '疑难问题算几个', unit: '个', step: 0.1 },
@@ -198,15 +198,16 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项（对公群技术售后）· 处理时效', desc: '每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。3600 秒 = 1 小时。',
+    title: '第二项（对公群技术售后）· 处理时效', desc: '每个已解决的问题单独打分再平均。从首次响应到解决：在下面的时间内处理完得满分；超过了，但处理人每隔不超过「同步间隔」就同步一次进度（只回「稍等」「还在看」不算），按比例得分；中间没同步得 0。要靠上游 / 研发才能解决的（AI 判断，主管可在「群问题」里改），按时同步进度得「依赖上游」那一档。3600 秒 = 1 小时。',
     fields: [
       { kind: 'num', path: 'part2.timeliness.fullSec', label: '多久内处理完得满分', unit: '秒' },
       { kind: 'num', path: 'part2.timeliness.syncSec', label: '超时后，每隔多久至少同步一次进度', unit: '秒' },
-      { kind: 'num', path: 'part2.timeliness.syncedPercent', label: '超时但按时同步了进度，得', unit: '%' }
+      { kind: 'num', path: 'part2.timeliness.syncedPercent', label: '超时但按时同步了进度，得', unit: '%' },
+      { kind: 'num', path: 'part2.timeliness.upstreamPercent', label: '依赖上游 / 研发、自己解决不了，但按时同步了进度，得', unit: '%' }
     ]
   },
   {
-    title: '第二项（对公群技术售后）· 问题闭环率', desc: '闭环率 = 各问题计分之和 ÷ 问题数：自己解决算 1（客户确认，或 24 小时内没再追问）；没解决但交接了，按下面的计分（交接完整 / 不完整由主管在「群问题」里改状态）；没解决、没交接算 0。判断不了的问题主管确认前不算。闭环率在两点之间线性折算，低于最后一点得最后一点的分。',
+    title: '第二项（对公群技术售后）· 问题闭环率', desc: '闭环率 = 各问题计分之和 ÷ 问题数：自己解决算 1（客户确认，或 24 小时内没再追问）；没解决但交接了，按下面的计分（交接人那一份按交接情况算；AI 判断，主管可在「群问题」里改）；没解决、没交接算 0。判断不了的问题主管确认前不算。闭环率在两点之间线性折算，低于最后一点得最后一点的分。',
     fields: [
       { kind: 'num', path: 'part2.closureRule.handedFull', label: '没解决但交接完整，算', unit: '个', step: 0.1 },
       { kind: 'num', path: 'part2.closureRule.handedPart', label: '有交接但不完整，算', unit: '个', step: 0.1 },
@@ -214,7 +215,7 @@ const TECH_SCHEMA: Section[] = [
     ]
   },
   {
-    title: '第二项（对公群技术售后）· 客户满意度和扣分', desc: '满意度起评满分，按人工录入的投诉逐次扣。',
+    title: '第二项（对公群技术售后）· 客户满意度和扣分', desc: '满意度起评满分，按投诉、抱怨逐次扣：群里 AI 标出、主管在「群问题」里确认「算」的，加上「绩效考核 → 录入」里手填的。晾着客户、交接遗漏等扣分项人工录入。',
     fields: [
       { kind: 'num', path: 'part2.satisfaction.complaint', label: '有效投诉每次扣', unit: '分' },
       { kind: 'num', path: 'part2.satisfaction.mild', label: '轻度抱怨每次扣', unit: '分' },

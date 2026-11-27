@@ -9,7 +9,7 @@ import { defaultRules, getRules, normalizeRules, resetRules, saveRules, type CsR
 import { loadInputs, SsReportError } from '../kpi/inputs'
 import { calcCs } from '../kpi/calc-cs'
 import { calcTech, type GroupStats } from '../kpi/calc-tech'
-import { coverage, issueStats } from '../kpi/data'
+import { confirmedFeedback, coverage, issueStats } from '../kpi/data'
 import { refreshIssueSessions } from '../issues/sessions'
 
 const MAX_DAYS = 62
@@ -115,7 +115,7 @@ export async function kpiRoutes(app: FastifyInstance): Promise<void> {
     }
     const month = monthOf(begin)
     const results = dept.kpiTemplate === 'tech'
-      ? calcTech(rules as TechRules, inputs, await getManual(dept.id, month), await loadGroupStats(dept, projectId, begin, end))
+      ? calcTech(rules as TechRules, inputs, await getManual(dept.id, month), await loadGroupStats(dept, projectId, begin, end), dept.groupChat ? await confirmedFeedback(projectId, dept.id, begin, end) : {})
       : calcCs(rules as CsRules, inputs)
     const uncached = Object.values(inputs.reply).reduce((s, v) => s + v.uncached, 0)
     const payload = { results, excluded: inputs.excluded, month, replyUncached: uncached }

@@ -37,6 +37,8 @@ export interface SessionItem {
   /** 单题分（技术支持部第二项规则）和组成 */
   issueScore?: number | null
   issueParts?: Record<string, number | null>
+  /** 没人接手、归当班负责人 */
+  issueDuty?: boolean
 }
 
 interface ListResp {
@@ -207,6 +209,7 @@ const SessionsPage: React.FC<{ embedded?: boolean; fixedSource?: 'ss' | 'wg' }> 
         <span>
           <span className="pill-tag">{v || '—'}</span>
           {!r.participate && <div className="form-hint" style={{ margin: '2px 0 0' }}>不参与考核</div>}
+          {r.issueDuty && <div className="form-hint" style={{ margin: '2px 0 0' }}>没人接手·当班兜底</div>}
         </span>
       )
     },

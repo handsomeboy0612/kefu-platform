@@ -81,6 +81,7 @@ const ManualModal: React.FC<{
         </div>
         <div>
           <div className="manual-title">第二项 · 对公群技术售后</div>
+          <div className="form-hint" style={{ margin: '0 0 4px' }}>群里 AI 标出、主管在「群问题」里确认「算」的投诉 / 抱怨 / 表扬会自动计入，这里只填群外的（如电话、私聊投诉），别重复录。</div>
           {num('p2Complaints', '有效投诉', `满意度每次扣 ${S2.complaint ?? 5} 分`)}
           {num('p2MildComplaints', '轻度抱怨', `满意度每次扣 ${S2.mild ?? 2} 分`)}
           {num('p2Praise', '客户点名表扬', `每次 +${S2.praise ?? 1}，每月最多 +${S2.praiseCap ?? 3}`)}
