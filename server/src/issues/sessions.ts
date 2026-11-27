@@ -158,8 +158,11 @@ export function issueMetrics(msgs: IssueMsg[], handler: string, ctx: MetricsCtx,
 
   let resolveSec: number | null = null
   let syncGapSec: number | null = null
-  if (status === 'resolved' && resolvedAt && firstReplyAt) {
-    const endAt = Math.max(Number(resolvedAt), firstReplyAt)
+  // 解决时间：AI 标出的解决那条；主管把状态改成「已解决」、AI 没标的，按处理人最后一次回复算（考核标准：到给出解决方案为止）
+  const lastReply = handler ? [...sorted].reverse().find((m) => m.sender_id === handler && !dispatchOnly(m) && isProgress(m)) : undefined
+  const solvedAt = Number(resolvedAt) || (lastReply ? Number(lastReply.send_time) : 0)
+  if (status === 'resolved' && solvedAt && firstReplyAt) {
+    const endAt = Math.max(solvedAt, firstReplyAt)
     resolveSec = endAt - firstReplyAt
     const pts = [firstReplyAt, ...progress.filter((t) => t > firstReplyAt && t < endAt), endAt]
     syncGapSec = Math.max(0, ...pts.slice(1).map((t, i) => t - pts[i]))
@@ -213,7 +216,7 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
     if (!sysUserId) continue
     const handedFromSys = e.handedFrom ? memberOf.get(e.handedFrom) || 0 : 0
     const msgIds = json<string[]>(r.message_ids, [])
-    const sig = sha(JSON.stringify(['m5', r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
+    const sig = sha(JSON.stringify(['m6', r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
     want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, e, sysUserId, handedFromSys: handedFromSys === sysUserId ? 0 : handedFromSys, msgIds, sig })
   }
 
