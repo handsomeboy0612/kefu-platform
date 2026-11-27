@@ -211,13 +211,13 @@ function validate(raw: unknown, b: Built): { issues: AiIssue[] } | { error: stri
     const status = String(x.status)
     if (!['resolved', 'unresolved', 'unknown'].includes(status)) return { error: `${tag} 的状态 ${status} 不对` }
     const msgs = ids.map((id) => byId.get(id)!)
-    const handler = String(x.handler_id || '')
+    // 处理人得是员工，并且在这个问题里说过话、被 @ 过，或者是接回的旧问题；对不上就当 AI 没判出处理人（不让整个群这一天都失败）
+    let handler = String(x.handler_id || '')
     if (handler) {
-      if (!b.staffIds.has(handler)) return { error: `${tag} 的处理人 ${handler} 不是员工` }
       const spoke = msgs.some((m) => m.sender_id === handler)
       const atted = msgs.some((m) => json<Array<{ user_id: string }>>(m.at_list, []).some((a) => a.user_id === handler))
       const inOld = ref !== 'new'
-      if (!spoke && !atted && !inOld) return { error: `${tag} 的处理人在这个问题里既没说话也没被派单` }
+      if (!b.staffIds.has(handler) || (!spoke && !atted && !inOld)) handler = ''
     }
     const resolvedId = clean(x.resolved_msg_id)
     if (status === 'resolved') {
