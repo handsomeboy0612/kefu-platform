@@ -59,6 +59,7 @@ export interface TechPart2 {
   source?: 'ai'
   weightedCnt?: number; resolvedCnt?: number; unresolvedCnt?: number; handedCnt?: number; unknownCnt?: number; handedOutCnt?: number
   feedback?: { complaint: number; mild: number; praise: number }
+  autoIgnored1h?: number; autoIgnored2h?: number; autoHandoverMiss?: number
   closureRate?: number | null; avgResolveSec?: number | null
 }
 

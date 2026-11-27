@@ -1195,3 +1195,11 @@ a.app-nav-item { text-decoration: none; }
 .fb-main { min-width: 0; flex: 1; }
 .fb-quote { margin-left: 8px; font-size: 13px; }
 .fb-actions { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+
+/* 群问题：评分明细 */
+.bd-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.bd-table td { padding: 8px 6px; border-top: 1px solid var(--app-border, #eee); vertical-align: top; }
+.bd-table tr:first-child td { border-top: none; }
+.bd-name { width: 76px; font-weight: 600; white-space: nowrap; }
+.bd-score { width: 90px; text-align: right; white-space: nowrap; }
+.bd-ded { font-size: 13px; padding: 4px 0; }

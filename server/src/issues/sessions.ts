@@ -18,7 +18,7 @@ const sha = (s: string): string => createHash('sha256').update(s).digest('hex')
 export const issueSessionId = (deptId: number, roomId: string, anchor: string): string => `wgi_${deptId}_${sha(`${roomId}|${anchor}`).slice(0, 40)}`
 
 interface Row extends IssueMarkFields {
-  id: number; room_id: string; room_name: string; anchor_msg_id: string; summary: string; message_ids: unknown
+  id: number; room_id: string; room_name: string; day: string; anchor_msg_id: string; summary: string; message_ids: unknown
   status: string; resolved_at: number
 }
 
@@ -27,7 +27,35 @@ export interface IssueMarkFields {
   handler_user_id: string; status: string; first_customer_at: number
   handed_from?: string; handover?: string; upstream?: number; difficulty_ai?: number
   override_handler: string | null; override_status: string | null; difficulty: number | null
-  override_handed_from?: string | null; override_handover?: string | null; override_upstream?: number | null
+  override_handed_from?: string | null; override_handover?: string | null; override_upstream?: number | null; override_ignored?: number | null
+}
+
+/** 某个时间的当班负责人：roster = 按值班表；active = 没配值班表的时段，按前后 2 小时在对公群里回复最多的本部门参与考核的人 */
+export type DutyFn = (sec: number) => { sysUserId: number; how: 'roster' | 'active' } | null
+
+export async function dutyResolver(dept: Department, gc: GroupConfig): Promise<DutyFn> {
+  const projectId = await deptProjectId(dept)
+  const acts = await query<{ sys_user_id: number; send_time: number }>(
+    `SELECT w.sys_user_id, m.send_time FROM wg_messages m
+     JOIN wg_staff w ON w.user_id = m.sender_id AND w.sys_user_id > 0
+     JOIN members mm ON mm.project_id = ? AND mm.sys_user_id = w.sys_user_id AND mm.department_id = ? AND mm.participate = 1 AND mm.active = 1
+     WHERE m.is_staff = 1 AND m.is_self = 0`,
+    [projectId, dept.id]
+  )
+  return (sec: number) => {
+    if (!sec) return null
+    const roster = dutyAt(gc, sec)
+    if (roster) return { sysUserId: roster, how: 'roster' }
+    const near = new Map<number, { n: number; gap: number }>()
+    for (const a of acts) {
+      const gap = Math.abs(Number(a.send_time) - sec)
+      if (gap > 7200) continue
+      const o = near.get(Number(a.sys_user_id)) || { n: 0, gap: Infinity }
+      near.set(Number(a.sys_user_id), { n: o.n + 1, gap: Math.min(o.gap, gap) })
+    }
+    const best = [...near.entries()].sort((x, y) => y[1].n - x[1].n || x[1].gap - y[1].gap)[0]
+    return best ? { sysUserId: best[0], how: 'active' } : null
+  }
 }
 
 export interface EffIssue {
@@ -35,8 +63,12 @@ export interface EffIssue {
   handler: string
   /** 没人接手、归当班负责人（SaleSmartly 成员 ID）；0 = 没有 */
   dutySysUserId: number
+  /** roster = 按值班表；active = 按当时在群里回复最多的人 */
+  dutyHow: '' | 'roster' | 'active'
   status: string
-  /** 1 简单 / 2 一般 / 3 疑难：主管标的优先；AI 建议疑难的，主管确认前按一般算（考核标准：疑难由主管确认） */
+  /** 晾着客户主管改成了不扣 */
+  ignoredOff: boolean
+  /** 1 简单 / 2 一般 / 3 疑难：AI 判的，主管改过的优先 */
   difficulty: number
   difficultyAi: number
   difficultyMarked: boolean
@@ -49,17 +81,19 @@ export interface EffIssue {
 const has = (v: unknown): boolean => v !== null && v !== undefined
 
 /** 主管改过的优先，其次 AI 的；AI 没判出处理人、主管也没改的，归当班负责人 */
-export function effective(r: IssueMarkFields, gc: GroupConfig): EffIssue {
+export function effective(r: IssueMarkFields, duty: DutyFn): EffIssue {
   const handler = has(r.override_handler) ? String(r.override_handler) : r.handler_user_id
-  const dutySysUserId = !has(r.override_handler) && !r.handler_user_id ? dutyAt(gc, Number(r.first_customer_at)) : 0
+  const d = !has(r.override_handler) && !r.handler_user_id ? duty(Number(r.first_customer_at)) : null
   const ai = Number(r.difficulty_ai) || 1
   const handedFrom = handler ? (has(r.override_handed_from) ? String(r.override_handed_from) : r.handed_from || '') : ''
   const hoRaw = has(r.override_handover) ? String(r.override_handover) : r.handover || ''
   return {
     handler,
-    dutySysUserId,
+    dutySysUserId: d?.sysUserId || 0,
+    dutyHow: d?.how || '',
     status: r.override_status || r.status,
-    difficulty: has(r.difficulty) ? Number(r.difficulty) : ai === 3 ? 2 : ai,
+    ignoredOff: has(r.override_ignored) && !Number(r.override_ignored),
+    difficulty: has(r.difficulty) ? Number(r.difficulty) : ai,
     difficultyAi: ai,
     difficultyMarked: has(r.difficulty),
     handedFrom: handedFrom && handedFrom !== handler ? handedFrom : '',
@@ -70,12 +104,16 @@ export function effective(r: IssueMarkFields, gc: GroupConfig): EffIssue {
 
 /** 查群问题时连上主管修改要带的列（表别名 i = wg_issues，k = wg_issue_marks） */
 export const MARK_COLS = `i.handed_from, i.handover, i.upstream, i.difficulty_ai, k.override_handler, k.override_status, k.difficulty,
-  k.override_handed_from, k.override_handover, k.override_upstream`
+  k.override_handed_from, k.override_handover, k.override_upstream, k.override_ignored`
 
 export interface IssueMsg { msg_id: string; sender_id: string; is_staff: number; is_self: number; at_list: unknown; content: string; send_time: number }
 export interface IssueMetrics {
   firstCustomerAt: number; firstSec: number | null; avgSec: number | null; resolveSec: number | null; syncGapSec: number | null
   start: number; end: number; customerCnt: number; staffCnt: number
+  /** 晾着客户：客户说话后超过 1 小时（不到 2 小时）/ 超过 2 小时没有任何员工回应的次数（值班按全天有人算） */
+  ignored1h: number; ignored2h: number
+  /** 明细（评分明细里显示）：首响从被 @ 派单还是客户提问算起、算了几轮、每次晾着客户（客户说话的时间、等了多久） */
+  firstFrom: '' | 'called' | 'asked'; rounds: number; ignoredWaits: Array<{ at: number; sec: number }>
 }
 
 /** 算时间要用的：认识的员工（判断「只 @ 同事的派单」） */
@@ -91,6 +129,8 @@ const ACK_RE = /^(好的?|好嘞|好滴|好吧|ok|okay|嗯+|哦+|噢+|收到|谢
 /** 客户说「我们看看」「我试试」「我等下复现一下」，又没在问，是客户自己去弄，不等我方回复 */
 const INTENT_RE = /(我|我们)(先|再|等下|等会儿?|这边|回头)?(去|来)?(看看|看下|看一下|试试|试一下|测一下|测试一下|复现一下|跑一下|跑下|加一下|研究一下|确认一下|排查一下)/
 const QUESTION_RE = /[？?]|吗|为什么|怎么回事|是不是/
+/** 需要回复的话（晾着客户从这种话算起）：问句、请求、报错；收尾的话（「好的谢谢」「还能接受」「我们再观察下」）不算 */
+const NEED_RE = /[？?]|吗|嘛|呢[。.!！~～]*$|怎么|为什么|为啥|能不能|可不可以|是不是|有没有|多少|哪个|哪里|哪些|啥|什么|咋|帮忙|麻烦|帮我|看下|看一下|查下|查一下|处理一下|加一下|报错|错误|失败|不行|用不了|不能用|超时|异常|崩了|error|timeout|(4\d\d|5\d\d)/i
 /** 处理人只回「稍等」「还在看」这类，不算同步进度 */
 const HOLD_RE = /^(稍等|等下|等一下|等等|收到|好的?|好嘞|ok|嗯+|在看|还在看|正在看|看下|看一下|看看|我看看|我看下|我看一下|我来看看?|马上|在查|查下|查一下|我查下|我查一下|在处理|处理中|还在处理|还在查|还在排查|排查中|在排查)+$/i
 
@@ -123,6 +163,17 @@ export function issueMetrics(msgs: IssueMsg[], handler: string, ctx: MetricsCtx,
   const fc = sorted.find(isCustomer)
   const firstCustomerAt = fc ? Number(fc.send_time) : 0
   let pending: number[] = []
+  // 晾着客户：从客户第一句没人回的话算起，到任何员工回应（只 @ 同事的派单不算回应）
+  let waitStart = 0
+  let ignored1h = 0
+  let ignored2h = 0
+  const ignoredWaits: Array<{ at: number; sec: number }> = []
+  const ignoredWait = (w: number): void => {
+    if (w > 7200) ignored2h++
+    else if (w > 3600) ignored1h++
+    if (w > 3600) ignoredWaits.push({ at: waitStart, sec: w })
+  }
+  let firstFrom: '' | 'called' | 'asked' = ''
   let calledAt = 0
   let firstReplyAt = 0
   let firstSec: number | null = null
@@ -135,13 +186,19 @@ export function issueMetrics(msgs: IssueMsg[], handler: string, ctx: MetricsCtx,
     if (isCustomer(m)) {
       if (!firstReplyAt && handler && !calledAt && ats.includes(handler)) calledAt = at
       if (!isAck(m)) pending.push(at)
+      // 晾着客户：只从需要回复的话（问句、请求、报错，或者 @ 了员工）算起；转发的「[系统]」消息不算
+      const needs = !isAck(m) && !(m.content || '').startsWith('[系统]') && (NEED_RE.test(m.content || '') || ats.some((id) => staffIds.has(id)))
+      if (needs && !waitStart) waitStart = at
       continue
     }
+    // 我方任何人说了话（包括商务回一句「让同事看下」）都算有回应
+    if (waitStart) { ignoredWait(at - waitStart); waitStart = 0 }
     if (handler && m.sender_id === handler) {
       if (dispatchOnly(m)) continue
       if (!firstReplyAt) {
         firstReplyAt = at
         const from = calledAt || (pending.length ? roundStart(pending) : 0)
+        firstFrom = calledAt ? 'called' : from ? 'asked' : ''
         firstSec = from ? Math.max(0, at - from) : null
         if (firstSec !== null) waits.push(firstSec)
       } else {
@@ -156,6 +213,8 @@ export function issueMetrics(msgs: IssueMsg[], handler: string, ctx: MetricsCtx,
     if (!dispatchOnly(m)) pending = []
   }
 
+  // 最后一句一直没人回：算到现在
+  if (waitStart) ignoredWait(Math.floor(Date.now() / 1000) - waitStart)
   let resolveSec: number | null = null
   let syncGapSec: number | null = null
   // 解决时间：AI 标出的解决那条；主管把状态改成「已解决」、AI 没标的，按处理人最后一次回复算（考核标准：到给出解决方案为止）
@@ -177,7 +236,12 @@ export function issueMetrics(msgs: IssueMsg[], handler: string, ctx: MetricsCtx,
     start: times.length ? times[0] : firstCustomerAt,
     end: times.length ? times[times.length - 1] : firstCustomerAt,
     customerCnt: sorted.filter(isCustomer).length,
-    staffCnt: sorted.filter((m) => m.is_staff && !m.is_self).length
+    staffCnt: sorted.filter((m) => m.is_staff && !m.is_self).length,
+    ignored1h,
+    ignored2h,
+    firstFrom,
+    rounds: waits.length,
+    ignoredWaits
   }
 }
 
@@ -189,7 +253,7 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
   const projectId = await deptProjectId(dept)
   if (!dept.groupChat || !projectId) return { upserted: 0, removed: 0 }
   const issues = await query<Row>(
-    `SELECT i.id, i.room_id, i.room_name, i.anchor_msg_id, i.summary, i.message_ids, i.handler_user_id, i.status, i.first_customer_at,
+    `SELECT i.id, i.room_id, i.room_name, i.day, i.anchor_msg_id, i.summary, i.message_ids, i.handler_user_id, i.status, i.first_customer_at,
             i.resolved_at, ${MARK_COLS}
      FROM wg_issues i
      LEFT JOIN wg_issue_marks k ON k.department_id = i.department_id AND k.room_id = i.room_id AND k.anchor_msg_id = i.anchor_msg_id
@@ -207,16 +271,21 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
   const deptMembers = new Set((await query<{ sys_user_id: number }>('SELECT sys_user_id FROM members WHERE project_id = ? AND department_id = ?', [projectId, dept.id])).map((m) => Number(m.sys_user_id)))
   const ctx = await metricsCtx()
   const gc = await getGroupConfig(dept)
+  const duty = await dutyResolver(dept, gc)
+  // 最近两天的问题，「晾着客户」可能还在变（最后一句一直没人回，算到现在），每小时重算一次
+  const hour = Math.floor(now() / 3600)
+  const recentDay = new Date((now() - 86400) * 1000)
+  const recent = `${recentDay.getFullYear()}-${String(recentDay.getMonth() + 1).padStart(2, '0')}-${String(recentDay.getDate()).padStart(2, '0')}`
 
   const want = new Map<string, { r: Row; e: EffIssue; sysUserId: number; handedFromSys: number; msgIds: string[]; sig: string }>()
   for (const r of issues) {
-    const e = effective(r, gc)
+    const e = effective(r, duty)
     // 处理人是本部门成员的挂到他名下；没人接手的挂到当班负责人名下
     const sysUserId = e.handler ? memberOf.get(e.handler) || 0 : deptMembers.has(e.dutySysUserId) ? e.dutySysUserId : 0
     if (!sysUserId) continue
     const handedFromSys = e.handedFrom ? memberOf.get(e.handedFrom) || 0 : 0
     const msgIds = json<string[]>(r.message_ids, [])
-    const sig = sha(JSON.stringify(['m6', r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
+    const sig = sha(JSON.stringify(['m8', r.day >= recent ? hour : 0, r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
     want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, e, sysUserId, handedFromSys: handedFromSys === sysUserId ? 0 : handedFromSys, msgIds, sig })
   }
 
@@ -249,14 +318,15 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
       const x = issueMetrics(ms, w.e.handler, ctx, w.e.status, Number(w.r.resolved_at))
       const first = x.firstCustomerAt || Number(w.r.first_customer_at) || 0
       return [projectId, id, 'wg', w.r.room_id.slice(0, 128), w.sig, w.r.id, w.e.status, (w.r.summary || '').slice(0, 255),
-        x.firstSec, x.avgSec, x.resolveSec, x.syncGapSec, w.e.difficulty, w.handedFromSys, w.handedFromSys ? w.e.handover : '', w.e.upstream ? 1 : 0, w.e.handler ? 0 : 1, '',
+        x.firstSec, x.avgSec, x.resolveSec, x.syncGapSec, w.e.difficulty, w.handedFromSys, w.handedFromSys ? w.e.handover : '', w.e.upstream ? 1 : 0, w.e.handler ? 0 : 1,
+        w.e.ignoredOff ? 0 : x.ignored1h, w.e.ignoredOff ? 0 : x.ignored2h, '',
         (w.r.room_name || w.r.room_id).slice(0, 255), w.sysUserId, WG_CHANNEL, 0, x.start || first, x.end || first, first || x.start, 0, 0, '',
         ms.length, x.customerCnt, x.staffCnt, 1, 0, t]
     })
     for (let i = 0; i < values.length; i += 300) {
       await execute(
         `INSERT INTO ss_sessions (project_id, session_id, source, room_id, content_sig, issue_id, issue_status, issue_summary,
-           issue_first_sec, issue_avg_sec, issue_resolve_sec, issue_sync_gap_sec, issue_difficulty, issue_handed_from_sys, issue_handover, issue_upstream, issue_duty, chat_user_id,
+           issue_first_sec, issue_avg_sec, issue_resolve_sec, issue_sync_gap_sec, issue_difficulty, issue_handed_from_sys, issue_handover, issue_upstream, issue_duty, issue_ignored1h, issue_ignored2h, chat_user_id,
            customer_name, sys_user_id, channel, channel_id, start_time, end_time, assign_time, star_score, quality_score, tags,
            msg_count, user_msg_count, kf_msg_count, msgs_synced, msg_fail, synced_at)
          VALUES ?
@@ -264,6 +334,7 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
            issue_summary = VALUES(issue_summary), issue_first_sec = VALUES(issue_first_sec), issue_avg_sec = VALUES(issue_avg_sec),
            issue_resolve_sec = VALUES(issue_resolve_sec), issue_sync_gap_sec = VALUES(issue_sync_gap_sec), issue_difficulty = VALUES(issue_difficulty),
            issue_handed_from_sys = VALUES(issue_handed_from_sys), issue_handover = VALUES(issue_handover), issue_upstream = VALUES(issue_upstream), issue_duty = VALUES(issue_duty),
+           issue_ignored1h = VALUES(issue_ignored1h), issue_ignored2h = VALUES(issue_ignored2h),
            customer_name = VALUES(customer_name), sys_user_id = VALUES(sys_user_id),
            start_time = VALUES(start_time), end_time = VALUES(end_time), assign_time = VALUES(assign_time), msg_count = VALUES(msg_count),
            user_msg_count = VALUES(user_msg_count), kf_msg_count = VALUES(kf_msg_count), synced_at = VALUES(synced_at)`,

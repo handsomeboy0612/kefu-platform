@@ -69,8 +69,12 @@ export interface TechPart2 {
   unknownCnt: number
   /** 交接给别人、别人接着处理的问题数 */
   handedOutCnt: number
-  /** 群里 AI 标出、主管确认的投诉 / 抱怨 / 表扬（已经加进满意度） */
+  /** 群里 AI 标出的投诉 / 抱怨 / 表扬（AI 判断能归到本人的；主管改过的按改过的，已经加进满意度） */
   feedback: { complaint: number; mild: number; praise: number }
+  /** 程序自动算的扣分次数（已经加进扣分）：晾着客户超过 1 小时 / 2 小时、交接遗漏 */
+  autoIgnored1h: number
+  autoIgnored2h: number
+  autoHandoverMiss: number
   closureRate: number | null
   avgResolveSec: number | null
 }
@@ -104,6 +108,11 @@ export interface GroupThread {
   share?: number
   /** handover = 交接出去的那一份（只算解决问题数和闭环率，不算响应、时效） */
   kind?: 'handover'
+  /** 晾着客户（程序按消息时间算）：超过 1 小时 / 2 小时没有任何回应的次数 */
+  ignored1h?: number
+  ignored2h?: number
+  /** 交接遗漏（AI 判出没交接，扣在交接人） */
+  handoverMiss?: number
 }
 /** 主管确认的客户反馈（AI 从群里标出来的），加在人工录入的投诉 / 抱怨 / 表扬上 */
 export type GroupFeedback = Record<string, { complaint: number; mild: number; praise: number }>
@@ -120,7 +129,7 @@ function volumePct(cnt: number, avg: number, c: VolumeCurve): { pct: number; bon
   return { pct: Math.min(100, pct), bonus: hit?.extra ?? 0 }
 }
 
-function tierPct(sec: number, tiers: ResponseTier[]): number {
+export function tierPct(sec: number, tiers: ResponseTier[]): number {
   for (const t of [...tiers].sort((a, b) => a.maxSec - b.maxSec)) if (sec <= t.maxSec) return t.percent
   return 0
 }
@@ -352,11 +361,16 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
 
   const items = { solved, firstResp, avgResp, timeliness, closure, satisfaction }
   const base = scale(Object.values(items))
+  // 扣分：晾着客户、交接遗漏由程序自动算，加上人工录入的（群外的情况）
   const D = P.deduction
+  const sum = (k: 'ignored1h' | 'ignored2h' | 'handoverMiss'): number => wg.threads.reduce((s, t) => s + (t[k] || 0), 0)
+  const autoIgnored1h = sum('ignored1h')
+  const autoIgnored2h = sum('ignored2h')
+  const autoHandoverMiss = sum('handoverMiss')
   const deduction = Math.min(
     D.cap,
-    (m.p2Ignored1h || 0) * D.ignored1h + (m.p2Ignored2h || 0) * D.ignored2h + (m.p2HandoverMiss || 0) * D.handoverMiss +
-    (m.p2WrongInfo || 0) * D.wrongInfo + (m.p2Violation ? D.violation : 0)
+    ((m.p2Ignored1h || 0) + autoIgnored1h) * D.ignored1h + ((m.p2Ignored2h || 0) + autoIgnored2h) * D.ignored2h +
+    ((m.p2HandoverMiss || 0) + autoHandoverMiss) * D.handoverMiss + (m.p2WrongInfo || 0) * D.wrongInfo + (m.p2Violation ? D.violation : 0)
   )
   const score = r1(Math.max(0, base + vol.bonus + praise - deduction))
   const g = getGrade(score, R.grades, complaints, !!m.p2Violation)
@@ -365,7 +379,7 @@ function calcPart2(R: TechRules, m: ManualEntry, isNight: boolean, wg: GroupStat
     score, base: r1(base), bonus: vol.bonus, praise, deduction, grade: g.grade, coeff: g.coeff,
     items: { solved: roundItem(solved), firstResp: roundItem(firstResp), avgResp: roundItem(avgResp), timeliness: roundItem(timeliness), closure: roundItem(closure), satisfaction: roundItem(satisfaction) },
     source: 'ai', threadCnt, roomCnt: wg.roomCnt, teamAvgCnt: r1(teamAvg), avgFirstSec: mean(firsts), avgReplySec: mean(avgs),
-    weightedCnt: r1(weightedCnt), resolvedCnt, unresolvedCnt, handedCnt, unknownCnt, handedOutCnt: wg.threads.length - own.length, feedback: fb, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
+    weightedCnt: r1(weightedCnt), resolvedCnt, unresolvedCnt, handedCnt, unknownCnt, handedOutCnt: wg.threads.length - own.length, feedback: fb, autoIgnored1h, autoIgnored2h, autoHandoverMiss, closureRate: closureRate === null ? null : r1(closureRate), avgResolveSec: mean(resolveSecs)
   }
 }
 
@@ -434,4 +448,91 @@ export function calcTech(R: TechRules, d: KpiInputs, manual: Record<string, Manu
       busySec: online?.busy_duration || 0
     }
   }).sort((a, b) => b.finalScore - a.finalScore)
+}
+
+// ─── 单个群问题的评分明细（群问题详情里显示，像网页会话的 AI 质检那样一项项列出来） ───
+
+const dur = (sec: number): string => {
+  const s = Math.max(0, Math.round(sec))
+  if (s < 60) return `${s} 秒`
+  if (s < 3600) return `${Math.floor(s / 60)} 分${s % 60 ? ` ${s % 60} 秒` : ''}`
+  return `${Math.floor(s / 3600)} 小时${Math.round((s % 3600) / 60) ? ` ${Math.round((s % 3600) / 60)} 分` : ''}`
+}
+/** 「≤ 1 分钟得 100%」这样的档位说明 */
+function tierText(sec: number, tiers: ResponseTier[]): string {
+  const sorted = [...tiers].sort((a, b) => a.maxSec - b.maxSec)
+  const hit = sorted.find((t) => sec <= t.maxSec)
+  return hit ? `≤ ${dur(hit.maxSec)} 得 ${hit.percent}%` : `超过 ${dur(sorted[sorted.length - 1]?.maxSec || 0)} 得 0`
+}
+
+export interface BreakdownItem { key: string; name: string; full: number; score: number | null; value: string; rule: string }
+export interface BreakdownDeduction { name: string; points: number; detail: string }
+
+export interface BreakdownInput {
+  firstSec: number | null; firstFrom: string; avgSec: number | null; rounds: number
+  status: string; resolveSec: number | null; syncGapSec: number | null; upstream: boolean
+  ignoredWaits: Array<{ at: number; sec: number }>; ignoredOff: boolean
+  handedFromName: string; handover: string
+  feedback: Array<{ kind: string; quote: string; counted: boolean }>
+  duty: boolean
+}
+
+/**
+ * 一个群问题按第二项规则逐项打分：首次响应、平均响应、处理时效、是否解决四项能按单个问题算（单题分 = 这四项按分值加权）；
+ * 晾着客户、交接遗漏、投诉 / 抱怨 / 表扬是扣在人身上的，列出来说明（计入处理人的第二项）。
+ * 解决问题数、闭环率要按一个人一段时间的全部问题算，不在这里。
+ */
+export function issueBreakdown(P: TechRules['part2'], x: BreakdownInput): { items: BreakdownItem[]; deductions: BreakdownDeduction[]; score: number | null } {
+  const w = P.weights
+  const items: BreakdownItem[] = []
+  const pct = (v: number | null, full: number): number | null => (v === null ? null : r1((v / 100) * full))
+
+  if (x.firstSec === null) {
+    items.push({ key: 'firstResp', name: '首次响应', full: w.firstResp, score: null, value: x.duty ? '没人接手' : '处理人没回应过客户', rule: '没有数据，不算' })
+  } else {
+    const p = tierPct(x.firstSec, P.firstRespTiers)
+    items.push({ key: 'firstResp', name: '首次响应', full: w.firstResp, score: pct(p, w.firstResp), value: `${dur(x.firstSec)}（从${x.firstFrom === 'called' ? '被 @ 派单' : '客户提问'}算起）`, rule: tierText(x.firstSec, P.firstRespTiers) })
+  }
+  if (x.avgSec === null) {
+    items.push({ key: 'avgResp', name: '平均响应', full: w.avgResp, score: null, value: '没有数据', rule: '不算' })
+  } else {
+    const p = tierPct(x.avgSec, P.avgRespTiers)
+    items.push({ key: 'avgResp', name: '平均响应', full: w.avgResp, score: pct(p, w.avgResp), value: `${dur(x.avgSec)}（${x.rounds} 轮提问的平均）`, rule: tierText(x.avgSec, P.avgRespTiers) })
+  }
+  const T = P.timeliness
+  if (x.status !== 'resolved' || x.resolveSec === null) {
+    items.push({ key: 'timeliness', name: '处理时效', full: w.timeliness, score: null, value: x.status === 'resolved' ? '没有回应时间' : '没解决', rule: '只算已解决的问题' })
+  } else {
+    const p = timelinessPct(P, { firstSec: x.firstSec, avgSec: x.avgSec, status: x.status, resolveSec: x.resolveSec, syncGapSec: x.syncGapSec, upstream: x.upstream })
+    const rule = x.resolveSec <= T.fullSec ? `${dur(T.fullSec)}内处理完得 100%`
+      : x.syncGapSec != null && x.syncGapSec <= T.syncSec
+        ? (x.upstream ? `超时，但依赖上游且每 ${dur(T.syncSec)}内都同步了进度，得 ${T.upstreamPercent ?? 100}%` : `超时，但每 ${dur(T.syncSec)}内都同步了进度，得 ${T.syncedPercent}%`)
+        : `超时，中间最长 ${dur(x.syncGapSec || 0)} 没同步进度（只回「稍等」「还在看」不算），得 0`
+    items.push({ key: 'timeliness', name: '处理时效', full: w.timeliness, score: pct(p, w.timeliness), value: `${dur(x.resolveSec)}（首次响应到给出解决办法）`, rule })
+  }
+  const cv = closureValue(P, x.status)
+  const ST: Record<string, string> = { resolved: '已解决', unresolved: '未解决、没交接', handed: '没解决、交接完整', handed_part: '没解决、交接不完整', unknown: '判断不了' }
+  items.push({
+    key: 'closure', name: '是否解决', full: w.closure, score: cv === null ? null : r1(cv * w.closure), value: ST[x.status] || x.status,
+    rule: cv === null ? '判断不了的不算' : `计 ${cv}（解决 1、交接完整 ${P.closureRule.handedFull}、不完整 ${P.closureRule.handedPart}、没解决 0）；人的闭环率按全部问题平均后再折算`
+  })
+
+  const D = P.deduction
+  const S = P.satisfaction
+  const deductions: BreakdownDeduction[] = []
+  if (!x.ignoredOff) {
+    const hm = (t: number): string => { const d = new Date(t * 1000); return `${d.getMonth() + 1}-${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` }
+    for (const g of x.ignoredWaits) {
+      deductions.push({ name: g.sec > 7200 ? '晾着客户超过 2 小时' : '晾着客户超过 1 小时', points: -(g.sec > 7200 ? D.ignored2h : D.ignored1h), detail: `客户 ${hm(g.at)} 说话后 ${dur(g.sec)} 没有任何员工回应` })
+    }
+  }
+  if (x.handedFromName && x.handover === 'none') deductions.push({ name: '交接遗漏（扣在交接人）', points: -D.handoverMiss, detail: `${x.handedFromName} 没交接，接手的人从头问起` })
+  for (const f of x.feedback.filter((y) => y.counted)) {
+    if (f.kind === 'complaint') deductions.push({ name: '有效投诉（满意度）', points: -S.complaint, detail: `「${f.quote.slice(0, 60)}」` })
+    else if (f.kind === 'mild') deductions.push({ name: '轻度抱怨（满意度）', points: -S.mild, detail: `「${f.quote.slice(0, 60)}」` })
+    else if (f.kind === 'praise') deductions.push({ name: '点名表扬', points: S.praise, detail: `「${f.quote.slice(0, 60)}」` })
+  }
+  // 单题分用不取整的分算（和会话记录列表里的一致）
+  const s = issueScore(P, { firstSec: x.firstSec, avgSec: x.avgSec, status: x.status, resolveSec: x.resolveSec, syncGapSec: x.syncGapSec, upstream: x.upstream })
+  return { items, deductions, score: s.score }
 }

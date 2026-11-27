@@ -77,7 +77,9 @@ const TechTable: React.FC<{
                   解决 {p.resolvedCnt} · 未解决 {p.unresolvedCnt}{p.handedCnt ? ` · 没解决交接 ${p.handedCnt}` : ''}{p.handedOutCnt ? ` · 交接出去 ${p.handedOutCnt}` : ''} · 判断不了 {p.unknownCnt} · 闭环 {p.closureRate == null ? '—' : `${p.closureRate}%`}
                   {p.avgResolveSec != null ? ` · 平均处理 ${fmtSec(p.avgResolveSec)}` : ''}
                   {p.feedback && (p.feedback.complaint || p.feedback.mild || p.feedback.praise)
-                    ? <><br />群里确认的：投诉 {p.feedback.complaint} · 抱怨 {p.feedback.mild} · 表扬 {p.feedback.praise}</> : null}
+                    ? <><br />群里的：投诉 {p.feedback.complaint} · 抱怨 {p.feedback.mild} · 表扬 {p.feedback.praise}</> : null}
+                  {p.autoIgnored1h || p.autoIgnored2h || p.autoHandoverMiss
+                    ? <><br />自动扣分：晾着客户 1 小时 {p.autoIgnored1h || 0} 次 · 2 小时 {p.autoIgnored2h || 0} 次{p.autoHandoverMiss ? ` · 交接遗漏 ${p.autoHandoverMiss} 次` : ''}</> : null}
                 </div>
               : <div className="kpi-cell-sub">群会话 {p.threadCnt}（{p.roomCnt} 个群，团队 {p.teamAvgCnt}，旧报表：按时间切段算的）· 首响 {fmtSec(p.avgFirstSec)}</div>}
             <Items items={p.items} names={P2_NAMES} />

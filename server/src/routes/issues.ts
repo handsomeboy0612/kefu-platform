@@ -7,11 +7,11 @@ import { audit, HttpError, resolveDepartment, type Department } from '../auth'
 import { execute, now, query } from '../db'
 import { deptProjectId } from '../members'
 import { AnalyzeBusyError, analyzeProgress, startAnalyze } from '../issues/analyze'
-import { effective, issueMetrics, metricsCtx, refreshIssueSessions, type EffIssue, type IssueMsg, type IssueMetrics, type MetricsCtx } from '../issues/sessions'
+import { dutyResolver, effective, issueMetrics, metricsCtx, refreshIssueSessions, type DutyFn, type EffIssue, type IssueMsg, type IssueMetrics, type MetricsCtx } from '../issues/sessions'
 import { getGroupConfig, type GroupConfig } from '../group/config'
 import { feedbackItems, type FeedbackItem } from '../kpi/data'
 import { getRules, type TechRules } from '../kpi/rules'
-import { closureValue, difficultyWeight, issueScore } from '../kpi/calc-tech'
+import { closureValue, difficultyWeight, issueBreakdown } from '../kpi/calc-tech'
 
 interface IssueRow {
   id: number; room_id: string; room_name: string; day: string; anchor_msg_id: string; summary: string
@@ -20,7 +20,7 @@ interface IssueRow {
   boundary_ok: number | null; handler_ok: number | null; status_ok: number | null; note: string | null
   override_handler: string | null; override_status: string | null; difficulty: number | null; mark_by: string | null
   handed_from: string; handover: string; upstream: number; difficulty_ai: number; feedback: unknown
-  override_handed_from: string | null; override_handover: string | null; override_upstream: number | null
+  override_handed_from: string | null; override_handover: string | null; override_upstream: number | null; override_ignored: number | null
 }
 
 const json = <T>(v: unknown, d: T): T => (v == null ? d : typeof v === 'string' ? (JSON.parse(v) as T) : (v as T))
@@ -57,8 +57,11 @@ async function memberIndex(dept: Department): Promise<Map<number, { name: string
   return new Map(rows.map((r) => [Number(r.sys_user_id), { name: r.nickname, counted: !!r.participate && !!r.active }]))
 }
 
-interface Ctx { staff: Awaited<ReturnType<typeof staffIndex>>; members: Awaited<ReturnType<typeof memberIndex>>; gc: GroupConfig }
-const loadCtx = async (dept: Department): Promise<Ctx> => ({ staff: await staffIndex(dept), members: await memberIndex(dept), gc: await getGroupConfig(dept) })
+interface Ctx { staff: Awaited<ReturnType<typeof staffIndex>>; members: Awaited<ReturnType<typeof memberIndex>>; gc: GroupConfig; duty: DutyFn }
+const loadCtx = async (dept: Department): Promise<Ctx> => {
+  const gc = await getGroupConfig(dept)
+  return { staff: await staffIndex(dept), members: await memberIndex(dept), gc, duty: await dutyResolver(dept, gc) }
+}
 
 /** 按现在的处理人、状态算每个问题的首响 / 均响 / 处理时效（和绩效第二项、会话记录同一个口径） */
 async function metricsFor(rows: IssueRow[], ctx: MetricsCtx, eff: Map<number, EffIssue>): Promise<Map<number, IssueMetrics>> {
@@ -95,11 +98,16 @@ function view(r: IssueRow, c: Ctx, e: EffIssue, mt?: IssueMetrics): Record<strin
     ownerSysUserId: e.handler ? (st?.counted ? st.sysUserId : 0) : duty?.counted ? e.dutySysUserId : 0,
     counted: e.handler ? !!st?.counted : !!duty?.counted,
     duty: !!duty,
+    /** roster = 按值班表；active = 没配值班表，按当时在群里回复最多的人 */
+    dutyHow: duty ? e.dutyHow : '',
+    ignoredOff: e.ignoredOff,
+    ignored1h: mt && !e.ignoredOff ? mt.ignored1h : 0,
+    ignored2h: mt && !e.ignoredOff ? mt.ignored2h : 0,
     handlerReason: r.handler_reason || '',
     aiHandlerName: r.handler_user_id ? staff.get(r.handler_user_id)?.nick || r.handler_user_id : '',
     status: e.status,
     aiStatus: r.status,
-    overridden: has(r.override_handler) || !!r.override_status || has(r.override_handed_from) || has(r.override_handover) || has(r.override_upstream),
+    overridden: has(r.override_handler) || !!r.override_status || has(r.override_handed_from) || has(r.override_handover) || has(r.override_upstream) || has(r.override_ignored),
     evidence: r.evidence || '',
     firstCustomerAt: Number(r.first_customer_at),
     firstReplySec: mt ? mt.firstSec : null,
@@ -123,7 +131,7 @@ function view(r: IssueRow, c: Ctx, e: EffIssue, mt?: IssueMetrics): Record<strin
 
 const SELECT = `
   SELECT i.*, k.boundary_ok, k.handler_ok, k.status_ok, k.note, k.override_handler, k.override_status, k.difficulty, k.updated_by mark_by,
-         k.override_handed_from, k.override_handover, k.override_upstream
+         k.override_handed_from, k.override_handover, k.override_upstream, k.override_ignored
   FROM wg_issues i
   LEFT JOIN wg_issue_marks k ON k.department_id = i.department_id AND k.room_id = i.room_id AND k.anchor_msg_id = i.anchor_msg_id`
 
@@ -142,7 +150,7 @@ function feedbackView(f: FeedbackItem, c: Ctx): Record<string, unknown> & { msgI
     msgId: f.msgId, issueId: f.issueId, roomName: f.roomName, day: f.day, at: f.at, quote: f.quote, reason: f.reason,
     kind: f.kind, kindText: FB_TEXT[f.kind] || f.kind, aiKind: f.aiKind, ownFault: f.ownFault,
     targetUserId: f.target, targetName: t?.nick || f.target || '—', targetCounted: !!t?.counted,
-    decision: f.decision, by: f.by
+    decision: f.decision, by: f.by, counted: f.counted
   }
 }
 
@@ -159,7 +167,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const c = await loadCtx(dept)
     const { staff } = c
     const rows = await query<IssueRow>(`${SELECT} WHERE i.department_id = ? AND i.day BETWEEN ? AND ? ORDER BY i.day DESC, i.first_customer_at DESC, i.id DESC`, [dept.id, from, to])
-    const eff = new Map(rows.map((r) => [r.id, effective(r, c.gc)]))
+    const eff = new Map(rows.map((r) => [r.id, effective(r, c.duty)]))
     const mts = await metricsFor(rows, await metricsCtx(), eff)
     const all = rows.map((r) => view(r, c, eff.get(r.id)!, mts.get(r.id)))
 
@@ -240,7 +248,8 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
         list: list.slice((page - 1) * pageSize, page * pageSize),
         counts: { all: all.length, others, nobody, duty: all.filter((x) => x.duty).length },
         dutyConfigured: c.gc.duty.length > 0,
-        feedbackPending: (await feedbackItems(dept.id)).filter((f) => f.decision === null && f.day >= from && f.day <= to && !!c.staff.get(f.target)?.counted).length,
+        // AI 判断计入的投诉 / 抱怨 / 表扬（针对本部门参与考核的人的）
+        feedbackCounted: (await feedbackItems(dept.id)).filter((f) => f.counted && f.day >= from && f.day <= to && !!c.staff.get(f.target)?.counted).length,
         summary,
         accuracy: { reviewed: reviewed.length, allOk, boundaryOk: ok('boundaryOk'), handlerOk: ok('handlerOk'), statusOk: ok('statusOk') },
         analysis: {
@@ -265,7 +274,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     if (!r) throw new HttpError(404, '问题不存在')
     const c = await loadCtx(dept)
     const { staff } = c
-    const e = effective(r, c.gc)
+    const e = effective(r, c.duty)
     const ids = json<string[]>(r.message_ids, [])
     const msgs = ids.length ? await query<{ msg_id: string; sender_id: string; sender_name: string; is_staff: number; is_self: number; at_list: unknown; content: string; send_time: number }>(
       'SELECT msg_id, sender_id, sender_name, is_staff, is_self, at_list, content, send_time FROM wg_messages WHERE msg_id IN (?) ORDER BY send_time, msg_id', [ids]
@@ -274,9 +283,15 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const mt = issueMetrics(msgs, e.handler, await metricsCtx(), e.status, Number(r.resolved_at))
     const v = view(r, c, e, mt)
     const P = dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2 : null
-    const sc = P ? issueScore(P, { firstSec: mt.firstSec, avgSec: mt.avgSec, status: e.status, resolveSec: mt.resolveSec, syncGapSec: mt.syncGapSec, upstream: e.upstream }) : null
     const fbs = (await feedbackItems(dept.id)).filter((f) => f.issueId === r.id).map((f) => feedbackView(f, c))
     const fbBy = new Map(fbs.map((f) => [f.msgId, f]))
+    // 评分明细：首响、均响、处理时效、是否解决逐项打分，晾着客户 / 交接遗漏 / 投诉抱怨表扬列出来
+    const bd = P ? issueBreakdown(P, {
+      firstSec: mt.firstSec, firstFrom: mt.firstFrom, avgSec: mt.avgSec, rounds: mt.rounds, status: e.status, resolveSec: mt.resolveSec,
+      syncGapSec: mt.syncGapSec, upstream: e.upstream, ignoredWaits: mt.ignoredWaits, ignoredOff: e.ignoredOff,
+      handedFromName: String(v.handedFromName || ''), handover: e.handover, duty: !!v.duty,
+      feedback: fbs.filter((f) => f.targetUserId === e.handler || !e.handler).map((f) => ({ kind: f.kind, quote: String(f.quote), counted: !!f.counted }))
+    }) : null
     const helpers = json<string[]>(r.helper_ids, []).map((h) => staff.get(h)?.nick || h)
     const speakers = [...new Set(msgs.filter((m) => m.is_staff && !m.is_self).map((m) => m.sender_id))]
     const options = [...new Set([...speakers, ...[...staff.entries()].filter(([, s]) => s.counted).map(([k]) => k)])]
@@ -286,7 +301,9 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
       data: {
         issue: {
           ...v, helpers, resolvedMsgId: r.resolved_msg_id,
-          score: sc?.score ?? null, scoreParts: sc?.parts ?? null
+          score: bd?.score ?? null,
+          scoreParts: bd ? Object.fromEntries(bd.items.map((i) => [i.key, i.score === null ? null : (i.score / i.full) * 100])) : null,
+          breakdown: bd
         },
         messages: msgs.map((m) => ({
           id: m.msg_id,
@@ -331,7 +348,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
    * 处理人（'' = 不归任何人）、状态、难度（1 简单 / 2 一般 / 3 疑难）、交接人（'' = 没有交接）、交接情况（full / part / none）、依赖上游
    */
   app.put('/api/issues/:id/override', async (req) => {
-    const b = (req.body || {}) as { handlerUserId?: string | null; status?: string | null; difficulty?: number | null; handedFromUserId?: string | null; handover?: string | null; upstream?: boolean | null }
+    const b = (req.body || {}) as { handlerUserId?: string | null; status?: string | null; difficulty?: number | null; handedFromUserId?: string | null; handover?: string | null; upstream?: boolean | null; ignored?: boolean | null }
     const patch: Record<string, unknown> = {}
     if ('handlerUserId' in b) patch.override_handler = b.handlerUserId === null || b.handlerUserId === undefined ? null : String(b.handlerUserId).slice(0, 128)
     if ('status' in b) {
@@ -348,6 +365,8 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
       patch.override_handover = b.handover ?? null
     }
     if ('upstream' in b) patch.override_upstream = b.upstream == null ? null : b.upstream ? 1 : 0
+    // 晾着客户：false = 这个问题不扣（比如客户自己说了不急），null = 按程序算
+    if ('ignored' in b) patch.override_ignored = b.ignored === false ? 0 : null
     if (!Object.keys(patch).length) throw new HttpError(400, '没有要改的')
     await mark(req, patch)
     // 会话记录里这一行跟着改（处理人换了会挂到新的人名下）
@@ -363,15 +382,16 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const to = String(q.to || '9999-99-99')
     const c = await loadCtx(dept)
     let list = (await feedbackItems(dept.id)).filter((f) => f.day >= from && f.day <= to)
-    if (q.decision === 'pending') list = list.filter((f) => f.decision === null)
-    else if (q.decision === 'ok' || q.decision === 'no') list = list.filter((f) => f.decision === q.decision)
-    // 默认只列针对本部门参与考核的人的（只有这些计入绩效）；AI 判断能归到本人的排前面
+    if (q.decision === 'counted') list = list.filter((f) => f.counted)
+    else if (q.decision === 'not') list = list.filter((f) => !f.counted)
+    else if (q.decision === 'changed') list = list.filter((f) => f.decision !== null)
+    // 默认只列针对本部门参与考核的人的（只有这些计入绩效）；计入的排前面
     if (q.scope !== 'all') list = list.filter((f) => !!c.staff.get(f.target)?.counted)
-    list.sort((a, b) => Number(b.ownFault) - Number(a.ownFault) || b.at - a.at)
+    list.sort((a, b) => Number(b.counted) - Number(a.counted) || b.at - a.at)
     return { success: true, data: list.map((f) => feedbackView(f, c)) }
   })
 
-  /** 主管判定一条客户反馈：decision = ok 算 / no 不算 / null 撤销；可以改类型和针对的人 */
+  /** 主管改一条客户反馈：decision = ok 算 / no 不算 / null 恢复 AI 的判断；可以改类型和针对的人 */
   app.put('/api/issues/feedback/:msgId', async (req) => {
     const dept = await groupDept(req)
     const msgId = (req.params as { msgId: string }).msgId

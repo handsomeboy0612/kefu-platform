@@ -160,7 +160,7 @@ const ConfigTab: React.FC<{ deptCode: string; config: GroupConfig; onSaved: () =
         <div className="panel-title">当班负责人</div>
         <div className="panel-desc">
           按《技术支持部绩效考核标准》：没人接手的群问题，按客户提问的时间归当班负责人（记 1 个问题，没解决闭环按 0 算）。
-          时间写成 HH:MM，结束早于开始表示跨零点（如 18:00 ~ 02:00）。没配的时段，没人接手的问题不归任何人。改完点上面的「保存」，马上生效。
+          时间写成 HH:MM，结束早于开始表示跨零点（如 18:00 ~ 02:00）。没配的时段，按客户提问前后 2 小时在对公群里回复最多的本部门的人算当班负责人。改完点「保存」，马上生效。
         </div>
         {duty.map((s, i) => (
           <div key={i} className="rule-tier-row">

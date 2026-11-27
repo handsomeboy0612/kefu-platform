@@ -115,11 +115,12 @@ export async function issueCredits(projectId: string, deptId: number, begin: num
   const rows = await query<{
     sys_user_id: number; room_id: string; nickname: string; participate: number; active: number; at: number
     issue_status: string; issue_first_sec: number | null; issue_avg_sec: number | null; issue_resolve_sec: number | null; issue_sync_gap_sec: number | null
-    issue_difficulty: number; issue_handed_from_sys: number; issue_handover: string; issue_upstream: number
+    issue_difficulty: number; issue_handed_from_sys: number; issue_handover: string; issue_upstream: number; issue_ignored1h: number; issue_ignored2h: number
     hf_name: string | null; hf_participate: number | null; hf_active: number | null
   }>(
     `SELECT s.sys_user_id, s.room_id, m.nickname, m.participate, m.active, s.assign_time at, s.issue_status, s.issue_first_sec, s.issue_avg_sec,
             s.issue_resolve_sec, s.issue_sync_gap_sec, s.issue_difficulty, s.issue_handed_from_sys, s.issue_handover, s.issue_upstream,
+            s.issue_ignored1h, s.issue_ignored2h,
             h.nickname hf_name, h.participate hf_participate, h.active hf_active
      FROM ss_sessions s
      JOIN members m ON m.project_id = s.project_id AND m.sys_user_id = s.sys_user_id AND m.department_id = ?
@@ -137,7 +138,8 @@ export async function issueCredits(projectId: string, deptId: number, begin: num
       sysUserId: Number(r.sys_user_id), name: r.nickname, participate: !!r.participate && !!r.active, at: Number(r.at), roomId: r.room_id,
       thread: {
         firstSec: n(r.issue_first_sec), avgSec: n(r.issue_avg_sec), status: r.issue_status || 'unknown', resolveSec: n(r.issue_resolve_sec),
-        syncGapSec: n(r.issue_sync_gap_sec), difficulty, upstream: !!Number(r.issue_upstream), share: full ? 0.5 : 1
+        syncGapSec: n(r.issue_sync_gap_sec), difficulty, upstream: !!Number(r.issue_upstream), share: full ? 0.5 : 1,
+        ignored1h: Number(r.issue_ignored1h) || 0, ignored2h: Number(r.issue_ignored2h) || 0
       }
     })
     if (handed) {
@@ -145,7 +147,8 @@ export async function issueCredits(projectId: string, deptId: number, begin: num
         sysUserId: Number(r.issue_handed_from_sys), name: r.hf_name!, participate: !!r.hf_participate && !!r.hf_active, at: Number(r.at), roomId: r.room_id,
         thread: {
           firstSec: null, avgSec: null, kind: 'handover', difficulty, share: full ? 0.5 : 0,
-          status: full ? 'handed' : r.issue_handover === 'part' ? 'handed_part' : 'unresolved'
+          status: full ? 'handed' : r.issue_handover === 'part' ? 'handed_part' : 'unresolved',
+          handoverMiss: r.issue_handover === 'none' ? 1 : 0
         }
       })
     }
@@ -165,8 +168,8 @@ export async function issueStats(projectId: string, deptId: number, begin: numbe
 }
 
 /**
- * 群里 AI 标出、主管确认「算」的客户反馈（投诉 / 抱怨 / 表扬），按消息时间落在时段里、针对本部门成员的，按人汇总。
- * 主管还没判的不算（考核标准：只算能归到本人身上的，由主管判定）。
+ * 群里 AI 标出的客户反馈（投诉 / 抱怨 / 表扬），按消息时间落在时段里、针对本部门成员的，按人汇总。
+ * 默认按 AI 的判断：能归到本人身上的算（表扬都算），上游故障、价格、产品政策引起的不算；主管改过的按主管的。
  */
 export async function confirmedFeedback(projectId: string, deptId: number, begin: number, end: number): Promise<GroupFeedback> {
   const items = await feedbackItems(deptId)
@@ -176,7 +179,7 @@ export async function confirmedFeedback(projectId: string, deptId: number, begin
   )).map((r) => [r.user_id, Number(r.sys_user_id)]))
   const out: GroupFeedback = {}
   for (const f of items) {
-    if (f.decision !== 'ok' || f.at < begin || f.at > end) continue
+    if (!f.counted || f.at < begin || f.at > end) continue
     const uid = staff.get(f.target)
     if (!uid) continue
     const o = (out[String(uid)] ||= { complaint: 0, mild: 0, praise: 0 })
@@ -188,8 +191,10 @@ export async function confirmedFeedback(projectId: string, deptId: number, begin
 export interface FeedbackItem {
   msgId: string; issueId: number; roomId: string; roomName: string; day: string; at: number; quote: string; reason: string
   aiKind: string; aiTarget: string; ownFault: boolean; handler: string
-  /** 主管判的（null = 还没判）；kind / target 是主管改过的优先 */
+  /** 主管判的（null = 没改，按 AI 的）；kind / target 是主管改过的优先 */
   decision: 'ok' | 'no' | null; kind: string; target: string; by: string
+  /** 计不计入：主管改过的按主管的，没改的按 AI（能归到本人的算） */
+  counted: boolean
 }
 
 /** 一个部门全部 AI 标出的客户反馈 + 主管的判定 */
@@ -209,7 +214,8 @@ export async function feedbackItems(deptId: number): Promise<FeedbackItem[]> {
       out.push({
         msgId: f.msg_id, issueId: r.id, roomId: r.room_id, roomName: r.room_name || r.room_id, day: r.day, at: Number(f.at) || 0, quote: f.quote || '', reason: f.reason || '',
         aiKind: f.type, aiTarget: f.target_id || '', ownFault: !!f.own_fault, handler: r.handler_user_id,
-        decision: (k?.decision as 'ok' | 'no' | undefined) ?? null, kind: k?.kind || f.type, target: k?.target_user || f.target_id || r.handler_user_id, by: k?.updated_by || ''
+        decision: (k?.decision as 'ok' | 'no' | undefined) ?? null, kind: k?.kind || f.type, target: k?.target_user || f.target_id || r.handler_user_id, by: k?.updated_by || '',
+        counted: k ? k.decision === 'ok' : !!f.own_fault || f.type === 'praise'
       })
     }
   }

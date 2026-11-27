@@ -13,8 +13,9 @@ interface Issue {
   handlerUserId: string; handlerName: string; handlerMember: string; counted: boolean; handlerReason: string; aiHandlerName: string
   status: string; aiStatus: string; overridden: boolean; evidence: string; difficulty: number; syncGapSec: number | null
   firstCustomerAt: number; firstReplySec: number | null; resolveSec: number | null; review: Review | null
-  /** 没人接手、归当班负责人 */
-  duty: boolean; ownerSysUserId: number
+  /** 没人接手、归当班负责人（roster 按值班表 / active 按当时在群里回复最多的人） */
+  duty: boolean; dutyHow: '' | 'roster' | 'active'; ownerSysUserId: number
+  ignoredOff: boolean; ignored1h: number; ignored2h: number
   difficultyAi: number; difficultyMarked: boolean; difficultyText: string
   handedFromUserId: string; handedFromName: string; handover: '' | 'full' | 'part' | 'none'; upstream: boolean; feedbackCount: number
 }
@@ -22,18 +23,18 @@ interface Issue {
 export interface Fb {
   msgId: string; issueId: number; roomName: string; day: string; at: number; quote: string; reason: string
   kind: string; kindText: string; aiKind: string; ownFault: boolean; targetUserId: string; targetName: string; targetCounted: boolean
-  decision: 'ok' | 'no' | null; by: string
+  decision: 'ok' | 'no' | null; by: string; counted: boolean
 }
 interface Person { name: string; sysUserId: number; issues: number; weighted: number; resolved: number; unresolved: number; handed: number; handedOut: number; unknown: number; closureRate: number | null; avgFirstSec: number | null; avgResolveSec: number | null }
 interface ListResp {
   total: number; list: Issue[]; counts: { all: number; others: number; nobody: number; duty: number }; summary: Person[]
-  dutyConfigured: boolean; feedbackPending: number
+  dutyConfigured: boolean; feedbackCounted: number
   accuracy: { reviewed: number; allOk: number; boundaryOk: number; handlerOk: number; statusOk: number }
   analysis: { progress: { rooms: number; roomsDone: number; calls: number; failed: number } | null; ok: number; failed: number; tokens: number; lastAt: number; failures: Array<{ room_id: string; day: string; error: string }> }
   handlers: Array<{ sysUserId: number; name: string }>
 }
 interface Detail {
-  issue: Issue & { helpers: string[]; resolvedMsgId: string; avgReplySec: number | null; score: number | null; scoreParts: Record<string, number | null> | null }
+  issue: Issue & { helpers: string[]; resolvedMsgId: string; avgReplySec: number | null; score: number | null; scoreParts: Record<string, number | null> | null; breakdown: Breakdown | null }
   messages: Array<{ id: string; senderType: string; senderName: string; content: string; sendTime: number; isResolved: boolean; feedbackKind: string }>
   feedback: Fb[]
   handlerOptions: Array<{ userId: string; name: string; counted: boolean }>
@@ -51,7 +52,7 @@ const HANDOVER_TEXT: Record<string, string> = { full: '交接完整', part: '交
 const FB_KIND: Record<string, string> = { complaint: '有效投诉', mild: '轻度抱怨', praise: '点名表扬' }
 const FB_CLASS: Record<string, string> = { complaint: 'danger', mild: 'muted', praise: 'success' }
 
-/** 一条 AI 标出的客户反馈：主管点「算」才计入第二项满意度（投诉 −5、抱怨 −2、表扬 +1） */
+/** 一条 AI 标出的客户反馈：默认按 AI 的判断（能归到本人的计入第二项满意度：投诉 −5、抱怨 −2、表扬 +1），主管可以改 */
 export const FeedbackRow: React.FC<{ deptCode: string; f: Fb; onChanged: () => void; onOpen?: (issueId: number) => void }> = ({ deptCode, f, onChanged, onOpen }) => {
   const decide = async (decision: 'ok' | 'no' | null, kind?: string): Promise<void> => {
     try {
@@ -68,29 +69,72 @@ export const FeedbackRow: React.FC<{ deptCode: string; f: Fb; onChanged: () => v
         <span className="fb-quote">「{f.quote}」</span>
         <div className="kpi-cell-sub">
           {fmtTime(f.at).slice(5)} · {f.roomName} · 针对 {f.targetName.replace(/^.*[-－—]/, '')}{!f.targetCounted && '（不计入）'}
-          {f.kind !== 'praise' && <> · AI：{f.ownFault ? '能归到本人' : '多半是上游 / 价格 / 政策原因'}</>}
+          {f.kind !== 'praise' && <> · AI：{f.ownFault ? '能归到本人' : '上游 / 价格 / 政策等原因'}</>}
           {f.reason ? ` · ${f.reason}` : ''}
           {onOpen && <> · <a className="copyable-name" onClick={() => onOpen(f.issueId)}>看聊天记录</a></>}
         </div>
       </div>
       <div className="fb-actions">
-        {f.decision === null ? (
-          <>
-            <Button size="small" theme="solid" onClick={() => void decide('ok')}>算</Button>
-            <Button size="small" onClick={() => void decide('no')}>不算</Button>
-            <Select size="small" style={{ width: 110 }} value={f.kind} optionList={Object.entries(FB_KIND).map(([value, label]) => ({ value, label }))}
-              onChange={(v) => void decide('ok', String(v))} placeholder="改类型并算" />
-          </>
-        ) : (
-          <>
-            <span className={`pill-tag ${f.decision === 'ok' ? 'success' : 'muted'}`}>{f.decision === 'ok' ? '算' : '不算'}{f.by ? ` · ${f.by}` : ''}</span>
-            <Button size="small" theme="borderless" onClick={() => void decide(null)}>撤销</Button>
-          </>
-        )}
+        <span className={`pill-tag ${f.counted ? (f.kind === 'praise' ? 'success' : 'danger') : 'muted'}`}>
+          {f.counted ? '计入' : '不计入'}{f.decision === null ? '（AI 判断）' : `（${f.by} 改的）`}
+        </span>
+        {f.counted
+          ? <Button size="small" onClick={() => void decide('no')}>改成不算</Button>
+          : <Button size="small" onClick={() => void decide('ok')}>改成算</Button>}
+        <Select size="small" style={{ width: 110 }} value={f.kind} optionList={Object.entries(FB_KIND).map(([value, label]) => ({ value, label }))}
+          onChange={(v) => void decide(f.counted ? 'ok' : 'no', String(v))} />
+        {f.decision !== null && <Button size="small" theme="borderless" onClick={() => void decide(null)}>恢复 AI</Button>}
       </div>
     </div>
   )
 }
+
+/** 评分明细：像网页会话的 AI 质检那样，一项项列出得分和扣分原因 */
+interface Breakdown {
+  items: Array<{ key: string; name: string; full: number; score: number | null; value: string; rule: string }>
+  deductions: Array<{ name: string; points: number; detail: string }>
+  score: number | null
+}
+const BreakdownCard: React.FC<{ b: Breakdown }> = ({ b }) => (
+  <div className="score-card">
+    <div className="panel-head" style={{ marginBottom: 4 }}>
+      <div className="panel-title" style={{ margin: 0, fontSize: 14 }}>评分明细（按「考核规则 → 第二项」算）</div>
+      <b style={{ fontSize: 20, color: b.score == null ? undefined : scoreColor(b.score) }}>{b.score == null ? '—' : b.score}<span className="form-hint" style={{ margin: '0 0 0 4px' }}>单题分</span></b>
+    </div>
+    <table className="bd-table">
+      <tbody>
+        {b.items.map((i) => (
+          <tr key={i.key}>
+            <td className="bd-name">{i.name}</td>
+            <td><div>{i.value}</div><div className="kpi-cell-sub">{i.rule}</div></td>
+            <td className="bd-score">
+              {i.score === null ? <span className="form-hint" style={{ margin: 0 }}>不算</span>
+                : <b style={{ color: i.score < i.full ? '#9C3B26' : '#2F6B47' }}>{i.score}</b>}
+              <span className="form-hint" style={{ margin: 0 }}> / {i.full}</span>
+              {i.score !== null && i.score < i.full && <div className="kpi-cell-sub" style={{ color: '#9C3B26' }}>扣 {Math.round((i.full - i.score) * 10) / 10}</div>}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+    {b.deductions.length > 0 && (
+      <>
+        <div className="panel-title" style={{ margin: '8px 0 0', fontSize: 13 }}>另外计到人身上的（加在处理人的第二项里）</div>
+        {b.deductions.map((d, k) => (
+          <div key={k} className="bd-ded">
+            <b style={{ color: d.points < 0 ? '#9C3B26' : '#2F6B47', minWidth: 44, display: 'inline-block' }}>{d.points > 0 ? `+${d.points}` : d.points}</b>
+            <span>{d.name}</span>
+            <span className="kpi-cell-sub" style={{ marginLeft: 8 }}>{d.detail}</span>
+          </div>
+        ))}
+      </>
+    )}
+    <div className="footnote" style={{ margin: 0 }}>
+      单题分 = 能算的几项得分合计 ÷ 这几项满分合计 × 100，只是参考。人的第二项还要看解决问题数（和团队平均比）、闭环率（全部问题平均后按曲线折算），满意度起评 10 分按投诉 / 抱怨扣，扣分项每月最多扣 15 分。
+    </div>
+  </div>
+)
+
 const pad = (n: number): string => String(n).padStart(2, '0')
 const ymd = (d: Date): string => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 const sec = (s: number | null): string => (s == null ? '—' : s < 60 ? `${s}秒` : s < 3600 ? `${Math.round(s / 60)}分钟` : `${Math.floor(s / 3600)}小时${Math.round((s % 3600) / 60)}分`)
@@ -171,7 +215,7 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
           <div className="score-card">
             <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--app-blue)' }}>{i.summary}</div>
             <div className="detail-grid" style={{ padding: 0, border: 'none' }}>
-              <div><span>处理人</span><b>{i.handlerName || '没人处理'}{i.duty && <em>（没人接手，归当班负责人）</em>}{i.handlerName && !i.counted && <em>（不计入）</em>}</b></div>
+              <div><span>处理人</span><b>{i.handlerName || '没人处理'}{i.duty && <em>（没人接手，归当班负责人{i.dutyHow === 'active' ? '：没配值班表，按当时在群里回复最多的人' : ''}）</em>}{i.handlerName && !i.counted && <em>（不计入）</em>}</b></div>
               <div><span>状态</span><b><StatusPill s={i.status} overridden={i.overridden} /></b></div>
               <div><span>首响</span><b>{sec(i.firstReplySec)}</b></div>
               <div><span>平均响应</span><b>{sec(i.avgReplySec)}</b></div>
@@ -187,7 +231,7 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
               </div>
               <div>
                 <span>难度</span>
-                <b>{i.difficultyText}{!i.difficultyMarked && i.difficultyAi === 3 && <em>（AI 建议疑难，主管确认前按一般算）</em>}{i.difficultyMarked && <em>（主管标的）</em>}</b>
+                <b>{i.difficultyText}<em>{i.difficultyMarked ? '（主管改的）' : '（AI 判断）'}</em></b>
               </div>
               <div><span>依赖上游</span><b>{i.upstream ? '是（超时但按时同步进度的，处理时效按满分算）' : '否'}</b></div>
               {i.handedFromName && <div style={{ gridColumn: '1 / -1' }}><span>交接</span><b>从 {i.handedFromName} 接手 · {HANDOVER_TEXT[i.handover] || '没交接'}<em>（{i.handover === 'full' ? '两人各记 0.5 个，交接人闭环按 0.8 算' : i.handover === 'part' ? '处理人记 1 个，交接人闭环按 0.4 算' : '处理人记 1 个，交接人闭环按 0 算'}）</em></b></div>}
@@ -226,9 +270,13 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
               <span className="form-label">依赖上游</span>
               <Select size="small" style={{ width: 80 }} value={i.upstream ? 1 : 0} optionList={[{ value: 1, label: '是' }, { value: 0, label: '否' }]}
                 onChange={(v) => void override({ upstream: !!v })} />
-              {i.overridden && <Button size="small" theme="borderless" onClick={() => void override({ handlerUserId: null, status: null, handedFromUserId: null, handover: null, upstream: null })}>恢复 AI 的判断</Button>}
+              <span className="form-label">晾着客户</span>
+              <Select size="small" style={{ width: 130 }} value={i.ignoredOff ? 0 : 1} optionList={[{ value: 1, label: '按程序算' }, { value: 0, label: '这个问题不扣' }]}
+                onChange={(v) => void override({ ignored: v ? null : false })} />
+              {i.overridden && <Button size="small" theme="borderless" onClick={() => void override({ handlerUserId: null, status: null, handedFromUserId: null, handover: null, upstream: null, ignored: null })}>恢复 AI 的判断</Button>}
             </div>
           </div>
+          {i.breakdown && <BreakdownCard b={i.breakdown} />}
           <div className="score-card">
             <div className="panel-title" style={{ margin: 0, fontSize: 14 }}>核对（算准确率用，三项都填才算核对过）</div>
             <Judge label="问题边界（消息分得对不对）" value={rv.boundaryOk} onChange={(v) => setRv({ ...rv, boundaryOk: v })} />
@@ -240,7 +288,7 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
           </div>
           {d.feedback.length > 0 && (
             <div className="score-card">
-              <div className="panel-title" style={{ margin: 0, fontSize: 14 }}>客户反馈（AI 标出，点「算」才计入第二项满意度）</div>
+              <div className="panel-title" style={{ margin: 0, fontSize: 14 }}>客户反馈（AI 标出并判断计不计入，主管可以改）</div>
               {d.feedback.map((f) => <FeedbackRow key={f.msgId} deptCode={deptCode} f={f} onChanged={() => { load(); onChanged() }} />)}
             </div>
           )}
@@ -279,7 +327,7 @@ const IssuesPage: React.FC = () => {
   const [reOpen, setReOpen] = useState(false)
   const [reRange, setReRange] = useState<[Date, Date] | null>(null)
   const [force, setForce] = useState(false)
-  const [fbDecision, setFbDecision] = useState('pending')
+  const [fbDecision, setFbDecision] = useState('counted')
   const [fbList, setFbList] = useState<Fb[] | null>(null)
   const [fbAll, setFbAll] = useState(false)
 
@@ -395,10 +443,10 @@ const IssuesPage: React.FC = () => {
 
       <div className={`notice ${pct !== null && pct >= 90 && (acc?.reviewed || 0) >= 30 ? 'success' : ''}`} style={{ marginTop: 0 }}>
         <b>核对进度</b>：已核对 {acc?.reviewed || 0} 个问题{pct !== null ? `，三项全对 ${acc?.allOk} 个，准确率 ${pct}%（边界 ${acc?.boundaryOk}、处理人 ${acc?.handlerOk}、是否解决 ${acc?.statusOk} 个对）` : ''}。
-        技术支持部第二项（对公群）按这里的群问题计分，处理人、状态、难度按主管改过的算。AI 会出错，建议主管每周抽查，没解决的问题记得标交接。
+        技术支持部第二项（对公群）按这里的群问题计分：处理人、状态、难度、交接、依赖上游、客户投诉都由 AI 判断，晾着客户由程序按时间算，主管改过的按改过的。AI 会出错，建议主管每周抽查。
         点问题打开，看聊天记录，三项各点「对 / 不对」，判断错的直接改处理人或状态；今天的问题还可能变，建议核对前一天及以前的。
-        {data && !data.dutyConfigured && <div style={{ marginTop: 6 }}>还没配当班负责人：没人接手的问题现在不归任何人。到「设置 → 对公群 → 群筛选」里按班次配上。</div>}
-        {!!data?.feedbackPending && <div style={{ marginTop: 6 }}><b>有 {data.feedbackPending} 条客户投诉 / 抱怨 / 表扬待确认</b>，在下面「客户反馈」里点「算」或「不算」。</div>}
+        {data && !data.dutyConfigured && <div style={{ marginTop: 6 }}>还没配值班表：没人接手的问题，按当时在群里回复最多的人算当班负责人。要按排班算，到「设置 → 对公群 → 群筛选」里按班次配上。</div>}
+        {!!data?.feedbackCounted && <div style={{ marginTop: 6 }}>AI 判断计入的客户投诉 / 抱怨 / 表扬 {data.feedbackCounted} 条，在下面「客户反馈」里看，判断错的可以改。</div>}
       </div>
 
       <div className="panel filter-panel">
@@ -440,19 +488,19 @@ const IssuesPage: React.FC = () => {
         <div className="panel-head">
           <div className="panel-title" style={{ margin: 0 }}>客户反馈（AI 标出的投诉 / 抱怨 / 表扬）</div>
           <RadioGroup type="button" buttonSize="small" value={fbDecision} onChange={(e) => setFbDecision(String(e.target.value))}>
-            <Radio value="pending">待确认</Radio>
-            <Radio value="ok">算的</Radio>
-            <Radio value="no">不算的</Radio>
+            <Radio value="counted">计入的</Radio>
+            <Radio value="not">不计入的</Radio>
+            <Radio value="changed">主管改过的</Radio>
             <Radio value="">全部</Radio>
           </RadioGroup>
         </div>
         <div className="panel-desc">
           按考核标准第二项「客户满意度」：有效投诉每次 −5、轻度抱怨每次 −2、点名表扬每次 +1（每月最多 +3）；只算能归到本人身上的，上游故障、价格、产品政策引起的不算。
-          主管点「算」才计入，和「绩效考核 → 录入」里手填的加在一起（别重复录）。AI 判断能归到本人的排在前面。
+          AI 判断计不计入，直接算进绩效；判断错的点「改成算 / 改成不算」。和「绩效考核 → 录入」里手填的加在一起（手填的只填群外的）。
           <label style={{ marginLeft: 8 }}><input type="checkbox" checked={fbAll} onChange={(e) => setFbAll(e.target.checked)} /> 也看针对商务等不计入的人的</label>
         </div>
         {!fbList ? <Spin /> : fbList.length === 0
-          ? <div className="form-hint">{fbDecision === 'pending' ? '没有待确认的' : '没有'}</div>
+          ? <div className="form-hint">没有</div>
           : fbList.map((f) => <FeedbackRow key={f.msgId} deptCode={dept.code} f={f} onChanged={() => { void loadFb(); void load() }} onOpen={setOpenId} />)}
       </div>
 

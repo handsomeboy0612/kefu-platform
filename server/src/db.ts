@@ -405,6 +405,10 @@ export async function ensureSchema(): Promise<void> {
   await addColumn('ss_sessions', 'issue_handover', "issue_handover VARCHAR(8) NOT NULL DEFAULT '' AFTER issue_handed_from_sys")
   await addColumn('ss_sessions', 'issue_upstream', 'issue_upstream TINYINT NOT NULL DEFAULT 0 AFTER issue_handover')
   await addColumn('ss_sessions', 'issue_duty', 'issue_duty TINYINT NOT NULL DEFAULT 0 AFTER issue_upstream')
+  // 晾着客户（程序按消息时间算：客户说话后超过 1 小时 / 2 小时没有任何员工回应的次数）；主管可以改成不扣
+  await addColumn('ss_sessions', 'issue_ignored1h', 'issue_ignored1h TINYINT NOT NULL DEFAULT 0 AFTER issue_duty')
+  await addColumn('ss_sessions', 'issue_ignored2h', 'issue_ignored2h TINYINT NOT NULL DEFAULT 0 AFTER issue_ignored1h')
+  await addColumn('wg_issue_marks', 'override_ignored', 'override_ignored TINYINT NULL AFTER override_upstream')
   // 按时间切段的群会话（会话 ID wg_ 开头，source 是 wg 或 wgr；群问题是 wgi_ 开头）2026-11-26 弃用，删掉
   const OLD = "s.source IN ('wg', 'wgr') AND s.session_id LIKE 'wg\\_%'"
   await execute(`DELETE m FROM ss_messages m JOIN ss_sessions s ON s.project_id = m.project_id AND s.session_id = m.session_id WHERE ${OLD}`)

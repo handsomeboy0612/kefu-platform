@@ -47,7 +47,7 @@ const SECTIONS: SectionDef[] = [
   {
     key: 'ai',
     title: 'AI 接口',
-    desc: '本部门的会话质检评分用这个接口，用量也算在这个 Key 上。',
+    desc: '本部门的 AI 都用这个接口：网页会话的质检评分；开了对公群的部门，群聊整理成群问题（判断处理人、是否解决、交接、投诉等）也用它。用量都算在这个 Key 上。',
     fields: [
       { key: 'apiBase', label: '接口地址', type: 'text', placeholder: 'https://yunwu.ai/v1' },
       { key: 'apiKey', label: 'API Key', type: 'secret' },
