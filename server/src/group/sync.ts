@@ -151,7 +151,10 @@ async function doSync(dept: Department, projectId: string, begin: number, end: n
   const saved = await query<{ user_id: string; sys_user_id: number; manual: number }>('SELECT user_id, sys_user_id, manual FROM wg_staff')
   const savedBy = new Map(saved.map((r) => [r.user_id, r]))
   const mapping = new Map<string, number>(saved.map((r) => [r.user_id, Number(r.sys_user_id)]))
-  for (const [userId, rawName] of staffSeen) {
+  // 归档服务员工名单里的人全部列进来（包括没在群里说过话、只被 @ 过的人，比如代勋），说过话的带上个人昵称和最近说话时间
+  const everyone = new Map<string, string>(staffSeen)
+  for (const userId of groupNicks.keys()) if (!everyone.has(userId)) everyone.set(userId, '')
+  for (const [userId, rawName] of everyone) {
     const nick = groupNicks.get(userId) || rawName
     const old = savedBy.get(userId)
     let sysUserId = old ? Number(old.sys_user_id) : 0
@@ -162,7 +165,7 @@ async function doSync(dept: Department, projectId: string, begin: number, end: n
     mapping.set(userId, sysUserId)
     await execute(
       `INSERT INTO wg_staff (user_id, nickname, raw_name, sys_user_id, last_seen_at) VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE nickname = VALUES(nickname), raw_name = VALUES(raw_name),
+       ON DUPLICATE KEY UPDATE nickname = VALUES(nickname), raw_name = IF(VALUES(raw_name) = '', raw_name, VALUES(raw_name)),
          sys_user_id = IF(manual = 1, sys_user_id, VALUES(sys_user_id)), last_seen_at = GREATEST(last_seen_at, VALUES(last_seen_at))`,
       [userId.slice(0, 128), nick.slice(0, 128), rawName.slice(0, 128), sysUserId, lastSaid.get(userId) || 0]
     )

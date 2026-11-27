@@ -72,7 +72,7 @@ const StaffTab: React.FC<{ deptCode: string }> = ({ deptCode }) => {
       render: (_: unknown, s: Staff) => s.counted ? <span className="pill-tag success">计入</span>
         : s.sysUserId ? <span className="pill-tag muted">不计入（非本部门考核人员）</span> : <span className="pill-tag muted">不计入</span>
     },
-    { title: '最近在群里说话', dataIndex: 'lastSeenAt', width: 150, render: (v: number) => fmtTime(v, '—') }
+    { title: '最近在群里说话', dataIndex: 'lastSeenAt', width: 150, render: (v: number) => fmtTime(v, '没说过话') }
   ]
   return (
     <div className="panel">
