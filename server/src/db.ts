@@ -400,10 +400,11 @@ export async function ensureSchema(): Promise<void> {
   await addColumn('wg_issue_marks', 'override_handed_from', 'override_handed_from VARCHAR(128) NULL AFTER difficulty')
   await addColumn('wg_issue_marks', 'override_handover', 'override_handover VARCHAR(8) NULL AFTER override_handed_from')
   await addColumn('wg_issue_marks', 'override_upstream', 'override_upstream TINYINT NULL AFTER override_handover')
-  // 会话记录里的群问题：交接人（成员）、交接情况、依赖上游、是不是当班负责人兜底
+  // 会话记录里的群问题：交接人（成员）、交接情况、依赖上游、是不是按被 @ 的人算的
   await addColumn('ss_sessions', 'issue_handed_from_sys', 'issue_handed_from_sys BIGINT NOT NULL DEFAULT 0 AFTER issue_difficulty')
   await addColumn('ss_sessions', 'issue_handover', "issue_handover VARCHAR(8) NOT NULL DEFAULT '' AFTER issue_handed_from_sys")
   await addColumn('ss_sessions', 'issue_upstream', 'issue_upstream TINYINT NOT NULL DEFAULT 0 AFTER issue_handover')
+  // 1 = 我方没人回复、按问题里被 @ 的本部门的人算的（以前是「当班负责人兜底」，2026-11-27 去掉了）
   await addColumn('ss_sessions', 'issue_duty', 'issue_duty TINYINT NOT NULL DEFAULT 0 AFTER issue_upstream')
   // 晾着客户（程序按消息时间算：客户说话后超过 1 小时 / 2 小时没有任何员工回应的次数）；主管可以改成不扣
   await addColumn('ss_sessions', 'issue_ignored1h', 'issue_ignored1h TINYINT NOT NULL DEFAULT 0 AFTER issue_duty')

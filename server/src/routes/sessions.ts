@@ -81,7 +81,7 @@ const toView = (r: SessionDbRow): Record<string, unknown> => ({
   issueSyncGapSec: r.issue_sync_gap_sec == null ? null : Number(r.issue_sync_gap_sec),
   issueDifficulty: Number(r.issue_difficulty) || 1,
   issueUpstream: !!Number(r.issue_upstream),
-  /** 没人接手、归当班负责人的 */
+  /** 我方没人回复、按被 @ 的人算的 */
   issueDuty: !!Number(r.issue_duty)
 })
 

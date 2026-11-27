@@ -474,7 +474,8 @@ export interface BreakdownInput {
   ignoredWaits: Array<{ at: number; sec: number }>; ignoredOff: boolean
   handedFromName: string; handover: string
   feedback: Array<{ kind: string; quote: string; counted: boolean }>
-  duty: boolean
+  /** 我方没人回复、按被 @ 的人算的 */
+  atAssigned: boolean
 }
 
 /**
@@ -488,7 +489,7 @@ export function issueBreakdown(P: TechRules['part2'], x: BreakdownInput): { item
   const pct = (v: number | null, full: number): number | null => (v === null ? null : r1((v / 100) * full))
 
   if (x.firstSec === null) {
-    items.push({ key: 'firstResp', name: '首次响应', full: w.firstResp, score: null, value: x.duty ? '没人接手' : '处理人没回应过客户', rule: '没有数据，不算' })
+    items.push({ key: 'firstResp', name: '首次响应', full: w.firstResp, score: null, value: x.atAssigned ? '被 @ 了一直没回复' : '处理人没回应过客户', rule: '没有数据，不算' })
   } else {
     const p = tierPct(x.firstSec, P.firstRespTiers)
     items.push({ key: 'firstResp', name: '首次响应', full: w.firstResp, score: pct(p, w.firstResp), value: `${dur(x.firstSec)}（从${x.firstFrom === 'called' ? '被 @ 派单' : '客户提问'}算起）`, rule: tierText(x.firstSec, P.firstRespTiers) })

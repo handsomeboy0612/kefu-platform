@@ -7,8 +7,7 @@ import { audit, HttpError, resolveDepartment, type Department } from '../auth'
 import { execute, now, query } from '../db'
 import { deptProjectId } from '../members'
 import { AnalyzeBusyError, analyzeProgress, startAnalyze } from '../issues/analyze'
-import { dutyResolver, effective, issueMetrics, metricsCtx, refreshIssueSessions, type DutyFn, type EffIssue, type IssueMsg, type IssueMetrics, type MetricsCtx } from '../issues/sessions'
-import { getGroupConfig, type GroupConfig } from '../group/config'
+import { effective, firstAt, issueMetrics, metricsCtx, refreshIssueSessions, type EffIssue, type IssueMsg, type IssueMetrics, type MetricsCtx } from '../issues/sessions'
 import { feedbackItems, type FeedbackItem } from '../kpi/data'
 import { getRules, type TechRules } from '../kpi/rules'
 import { closureValue, difficultyWeight, issueBreakdown } from '../kpi/calc-tech'
@@ -49,7 +48,7 @@ async function staffIndex(dept: Department): Promise<Map<string, { nick: string;
   }]))
 }
 
-/** 本部门成员（当班负责人兜底时按 SaleSmartly 成员找名字） */
+/** 本部门成员（SaleSmartly 成员 ID → 名字、是否参与考核） */
 async function memberIndex(dept: Department): Promise<Map<number, { name: string; counted: boolean }>> {
   const rows = await query<{ sys_user_id: number; nickname: string; participate: number; active: number }>(
     'SELECT sys_user_id, nickname, participate, active FROM members WHERE project_id = ? AND department_id = ?', [await deptProjectId(dept), dept.id]
@@ -57,11 +56,11 @@ async function memberIndex(dept: Department): Promise<Map<number, { name: string
   return new Map(rows.map((r) => [Number(r.sys_user_id), { name: r.nickname, counted: !!r.participate && !!r.active }]))
 }
 
-interface Ctx { staff: Awaited<ReturnType<typeof staffIndex>>; members: Awaited<ReturnType<typeof memberIndex>>; gc: GroupConfig; duty: DutyFn }
-const loadCtx = async (dept: Department): Promise<Ctx> => {
-  const gc = await getGroupConfig(dept)
-  return { staff: await staffIndex(dept), members: await memberIndex(dept), gc, duty: await dutyResolver(dept, gc) }
-}
+interface Ctx { staff: Awaited<ReturnType<typeof staffIndex>>; members: Awaited<ReturnType<typeof memberIndex>> }
+const loadCtx = async (dept: Department): Promise<Ctx> => ({ staff: await staffIndex(dept), members: await memberIndex(dept) })
+/** 本部门的人（企微 user_id 挂到了本部门成员上）：没人回复的问题，按问题里被 @ 的这些人算 */
+const inDept = (c: Ctx) => (userId: string): boolean => { const st = c.staff.get(userId); return !!st && c.members.has(st.sysUserId) }
+const noAiHandler = (r: IssueRow): boolean => (r.override_handler === null || r.override_handler === undefined) && !r.handler_user_id
 
 /** 按现在的处理人、状态算每个问题的首响 / 均响 / 处理时效（和绩效第二项、会话记录同一个口径） */
 async function metricsFor(rows: IssueRow[], ctx: MetricsCtx, eff: Map<number, EffIssue>): Promise<Map<number, IssueMetrics>> {
@@ -81,7 +80,6 @@ const DIFF_TEXT: Record<number, string> = { 1: '简单', 2: '一般', 3: '疑难
 function view(r: IssueRow, c: Ctx, e: EffIssue, mt?: IssueMetrics): Record<string, unknown> {
   const { staff, members } = c
   const st = staff.get(e.handler)
-  const duty = !e.handler && e.dutySysUserId ? members.get(e.dutySysUserId) : undefined
   const hf = e.handedFrom ? staff.get(e.handedFrom) : undefined
   const has = (v: unknown): boolean => v !== null && v !== undefined
   const fb = json<Array<{ msg_id: string }>>(r.feedback, [])
@@ -92,14 +90,13 @@ function view(r: IssueRow, c: Ctx, e: EffIssue, mt?: IssueMetrics): Record<strin
     summary: r.summary,
     messageCount: json<string[]>(r.message_ids, []).length,
     handlerUserId: e.handler,
-    handlerName: e.handler ? st?.nick || e.handler : duty ? duty.name : '',
-    handlerMember: e.handler ? st?.member || '' : duty?.name || '',
-    /** 计入的成员（处理人是本部门参与考核的；没人接手的归当班负责人） */
-    ownerSysUserId: e.handler ? (st?.counted ? st.sysUserId : 0) : duty?.counted ? e.dutySysUserId : 0,
-    counted: e.handler ? !!st?.counted : !!duty?.counted,
-    duty: !!duty,
-    /** roster = 按值班表；active = 没配值班表，按当时在群里回复最多的人 */
-    dutyHow: duty ? e.dutyHow : '',
+    handlerName: e.handler ? st?.nick || e.handler : '',
+    handlerMember: e.handler ? st?.member || '' : '',
+    /** 计入的成员：处理人（自己回复的，或者没人回复时被 @ 的）是本部门参与考核的 */
+    ownerSysUserId: e.handler && st?.counted ? st.sysUserId : 0,
+    counted: !!st?.counted,
+    /** 我方没人回复、按被 @ 的人算的 */
+    atAssigned: e.atAssigned,
     ignoredOff: e.ignoredOff,
     ignored1h: mt && !e.ignoredOff ? mt.ignored1h : 0,
     ignored2h: mt && !e.ignoredOff ? mt.ignored2h : 0,
@@ -167,11 +164,20 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const c = await loadCtx(dept)
     const { staff } = c
     const rows = await query<IssueRow>(`${SELECT} WHERE i.department_id = ? AND i.day BETWEEN ? AND ? ORDER BY i.day DESC, i.first_customer_at DESC, i.id DESC`, [dept.id, from, to])
-    const eff = new Map(rows.map((r) => [r.id, effective(r, c.duty)]))
+    // 我方没人回复的问题，按被 @ 的本部门的人算（要看消息的 at_list）
+    const noH = rows.filter(noAiHandler)
+    const atMsgs = new Map<string, { at_list: unknown; send_time: number }>()
+    const atIds = [...new Set(noH.flatMap((r) => json<string[]>(r.message_ids, [])))]
+    for (let i = 0; i < atIds.length; i += 1000) {
+      for (const m of await query<{ msg_id: string; at_list: unknown; send_time: number }>('SELECT msg_id, at_list, send_time FROM wg_messages WHERE msg_id IN (?)', [atIds.slice(i, i + 1000)])) atMsgs.set(m.msg_id, m)
+    }
+    const atOwner = (r: IssueRow): string => noAiHandler(r)
+      ? firstAt(json<string[]>(r.message_ids, []).map((id) => atMsgs.get(id)).filter((m): m is { at_list: unknown; send_time: number } => !!m), inDept(c)) : ''
+    const eff = new Map(rows.map((r) => [r.id, effective(r, atOwner(r))]))
     const mts = await metricsFor(rows, await metricsCtx(), eff)
     const all = rows.map((r) => view(r, c, eff.get(r.id)!, mts.get(r.id)))
 
-    // 每人汇总（和绩效第二项一个口径）：只算本部门参与考核的处理人（没人接手的归当班负责人）；
+    // 每人汇总（和绩效第二项一个口径）：只算本部门参与考核的处理人（自己回复的，或者我方没人回复时被 @ 的）；
     // 交接完整的，交接人和处理人各记 0.5 个，交接人的闭环按交接情况算；其余（商务、客服等）只计数
     const P = dept.kpiTemplate === 'tech' ? ((await getRules(dept)).rules as TechRules).part2 : null
     type Person = { name: string; sysUserId: number; issues: number; weighted: number; resolved: number; unresolved: number; handed: number; handedOut: number; unknown: number; closure: number[]; first: number[]; resolve: number[] }
@@ -193,7 +199,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
         h.weighted += full ? dw * 0.5 : 0
         h.closure.push(full ? P?.closureRule.handedFull ?? 0.8 : x.handover === 'part' ? P?.closureRule.handedPart ?? 0.4 : 0)
       }
-      if (!owner) { if (!x.handlerUserId && !x.duty) nobody++; else others++; continue }
+      if (!owner) { if (!x.handlerUserId) nobody++; else others++; continue }
       const p = person(owner)
       p.issues++
       p.weighted += dw * (full ? 0.5 : 1)
@@ -221,9 +227,9 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
 
     // 筛选 + 分页
     let list = all
-    if (q.handler === 'none') list = list.filter((x) => !x.handlerUserId && !x.duty)
-    else if (q.handler === 'others') list = list.filter((x) => !x.ownerSysUserId && (x.handlerUserId || x.duty))
-    else if (q.handler === 'duty') list = list.filter((x) => x.duty)
+    if (q.handler === 'none') list = list.filter((x) => !x.handlerUserId)
+    else if (q.handler === 'others') list = list.filter((x) => !x.ownerSysUserId && x.handlerUserId)
+    else if (q.handler === 'at') list = list.filter((x) => x.atAssigned)
     else if (q.handler) list = list.filter((x) => String(x.ownerSysUserId) === q.handler || String(x.handedFromSysUserId) === q.handler)
     if (q.status && STATUS.includes(q.status)) list = list.filter((x) => x.status === q.status)
     if (q.review === 'unreviewed') list = list.filter((x) => !x.review)
@@ -246,8 +252,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
       data: {
         total: list.length,
         list: list.slice((page - 1) * pageSize, page * pageSize),
-        counts: { all: all.length, others, nobody, duty: all.filter((x) => x.duty).length },
-        dutyConfigured: c.gc.duty.length > 0,
+        counts: { all: all.length, others, nobody, atAssigned: all.filter((x) => x.atAssigned).length },
         // AI 判断计入的投诉 / 抱怨 / 表扬（针对本部门参与考核的人的）
         feedbackCounted: (await feedbackItems(dept.id)).filter((f) => f.counted && f.day >= from && f.day <= to && !!c.staff.get(f.target)?.counted).length,
         summary,
@@ -274,11 +279,11 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     if (!r) throw new HttpError(404, '问题不存在')
     const c = await loadCtx(dept)
     const { staff } = c
-    const e = effective(r, c.duty)
     const ids = json<string[]>(r.message_ids, [])
     const msgs = ids.length ? await query<{ msg_id: string; sender_id: string; sender_name: string; is_staff: number; is_self: number; at_list: unknown; content: string; send_time: number }>(
       'SELECT msg_id, sender_id, sender_name, is_staff, is_self, at_list, content, send_time FROM wg_messages WHERE msg_id IN (?) ORDER BY send_time, msg_id', [ids]
     ) : []
+    const e = effective(r, noAiHandler(r) ? firstAt(msgs, inDept(c)) : '')
     // 按现在的处理人（主管改过的优先）算首响 / 均响 / 处理时长和单题分（第二项规则）
     const mt = issueMetrics(msgs, e.handler, await metricsCtx(), e.status, Number(r.resolved_at))
     const v = view(r, c, e, mt)
@@ -289,7 +294,7 @@ export async function issueRoutes(app: FastifyInstance): Promise<void> {
     const bd = P ? issueBreakdown(P, {
       firstSec: mt.firstSec, firstFrom: mt.firstFrom, avgSec: mt.avgSec, rounds: mt.rounds, status: e.status, resolveSec: mt.resolveSec,
       syncGapSec: mt.syncGapSec, upstream: e.upstream, ignoredWaits: mt.ignoredWaits, ignoredOff: e.ignoredOff,
-      handedFromName: String(v.handedFromName || ''), handover: e.handover, duty: !!v.duty,
+      handedFromName: String(v.handedFromName || ''), handover: e.handover, atAssigned: e.atAssigned,
       feedback: fbs.filter((f) => f.targetUserId === e.handler || !e.handler).map((f) => ({ kind: f.kind, quote: String(f.quote), counted: !!f.counted }))
     }) : null
     const helpers = json<string[]>(r.helper_ids, []).map((h) => staff.get(h)?.nick || h)

@@ -13,8 +13,8 @@ interface Issue {
   handlerUserId: string; handlerName: string; handlerMember: string; counted: boolean; handlerReason: string; aiHandlerName: string
   status: string; aiStatus: string; overridden: boolean; evidence: string; difficulty: number; syncGapSec: number | null
   firstCustomerAt: number; firstReplySec: number | null; resolveSec: number | null; review: Review | null
-  /** 没人接手、归当班负责人（roster 按值班表 / active 按当时在群里回复最多的人） */
-  duty: boolean; dutyHow: '' | 'roster' | 'active'; ownerSysUserId: number
+  /** 我方没人回复、按问题里被 @ 的本部门的人算的 */
+  atAssigned: boolean; ownerSysUserId: number
   ignoredOff: boolean; ignored1h: number; ignored2h: number
   difficultyAi: number; difficultyMarked: boolean; difficultyText: string
   handedFromUserId: string; handedFromName: string; handover: '' | 'full' | 'part' | 'none'; upstream: boolean; feedbackCount: number
@@ -27,8 +27,8 @@ export interface Fb {
 }
 interface Person { name: string; sysUserId: number; issues: number; weighted: number; resolved: number; unresolved: number; handed: number; handedOut: number; unknown: number; closureRate: number | null; avgFirstSec: number | null; avgResolveSec: number | null }
 interface ListResp {
-  total: number; list: Issue[]; counts: { all: number; others: number; nobody: number; duty: number }; summary: Person[]
-  dutyConfigured: boolean; feedbackCounted: number
+  total: number; list: Issue[]; counts: { all: number; others: number; nobody: number; atAssigned: number }; summary: Person[]
+  feedbackCounted: number
   accuracy: { reviewed: number; allOk: number; boundaryOk: number; handlerOk: number; statusOk: number }
   analysis: { progress: { rooms: number; roomsDone: number; calls: number; failed: number } | null; ok: number; failed: number; tokens: number; lastAt: number; failures: Array<{ room_id: string; day: string; error: string }> }
   handlers: Array<{ sysUserId: number; name: string }>
@@ -215,7 +215,7 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
           <div className="score-card">
             <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--app-blue)' }}>{i.summary}</div>
             <div className="detail-grid" style={{ padding: 0, border: 'none' }}>
-              <div><span>处理人</span><b>{i.handlerName || '没人处理'}{i.duty && <em>（没人接手，归当班负责人{i.dutyHow === 'active' ? '：没配值班表，按当时在群里回复最多的人' : ''}）</em>}{i.handlerName && !i.counted && <em>（不计入）</em>}</b></div>
+              <div><span>处理人</span><b>{i.handlerName || '没人处理'}{i.atAssigned && <em>（我方没人回复，按被 @ 的人算）</em>}{i.handlerName && !i.counted && <em>（不计入）</em>}</b></div>
               <div><span>状态</span><b><StatusPill s={i.status} overridden={i.overridden} /></b></div>
               <div><span>首响</span><b>{sec(i.firstReplySec)}</b></div>
               <div><span>平均响应</span><b>{sec(i.avgReplySec)}</b></div>
@@ -242,13 +242,13 @@ export const IssueDrawer: React.FC<{ deptCode: string; id: number | null; onClos
             </div>
             <div className="issue-edit">
               <span className="form-label">改处理人</span>
-              <Select size="small" style={{ width: 220 }} value={i.handlerUserId || (i.duty ? '__duty' : '')} filter
+              <Select size="small" style={{ width: 220 }} value={i.atAssigned ? '__at' : i.handlerUserId || ''} filter
                 optionList={[
-                  ...(i.duty ? [{ value: '__duty', label: `当班负责人兜底（${i.handlerName}）` }] : []),
+                  ...(i.atAssigned ? [{ value: '__at', label: `被 @ 的人（${i.handlerName}）` }] : []),
                   { value: '', label: '不归任何人（不计入）' },
                   ...d.handlerOptions.map((o) => ({ value: o.userId, label: o.counted ? o.name : `${o.name}（不计入）` }))
                 ]}
-                onChange={(v) => { if (v !== '__duty') void override({ handlerUserId: String(v ?? '') }) }} />
+                onChange={(v) => { if (v !== '__at') void override({ handlerUserId: String(v ?? '') }) }} />
               <span className="form-label">改状态</span>
               <Select size="small" style={{ width: 200 }} value={i.status} optionList={STATUS_OPTIONS}
                 onChange={(v) => void override({ status: String(v) })} />
@@ -389,7 +389,7 @@ const IssuesPage: React.FC = () => {
       title: '处理人', dataIndex: 'handlerName', width: 150,
       render: (v: string, r: Issue) => v
         ? <span><span className={`pill-tag ${r.counted ? '' : 'muted'}`}>{v.replace(/^.*[-－—]/, '')}</span>
-            {r.duty && <div className="kpi-cell-sub">当班兜底</div>}{!r.counted && <div className="kpi-cell-sub">不计入</div>}
+            {r.atAssigned && <div className="kpi-cell-sub">被 @ 没回复</div>}{!r.counted && <div className="kpi-cell-sub">不计入</div>}
             {r.handedFromName && <div className="kpi-cell-sub">从 {r.handedFromName.replace(/^.*[-－—]/, '')} 接手·{HANDOVER_TEXT[r.handover] || ''}</div>}</span>
         : <span className="form-hint" style={{ margin: 0 }}>没人处理</span>
     },
@@ -445,7 +445,6 @@ const IssuesPage: React.FC = () => {
         <b>核对进度</b>：已核对 {acc?.reviewed || 0} 个问题{pct !== null ? `，三项全对 ${acc?.allOk} 个，准确率 ${pct}%（边界 ${acc?.boundaryOk}、处理人 ${acc?.handlerOk}、是否解决 ${acc?.statusOk} 个对）` : ''}。
         技术支持部第二项（对公群）按这里的群问题计分：处理人、状态、难度、交接、依赖上游、客户投诉都由 AI 判断，晾着客户由程序按时间算，主管改过的按改过的。AI 会出错，建议主管每周抽查。
         点问题打开，看聊天记录，三项各点「对 / 不对」，判断错的直接改处理人或状态；今天的问题还可能变，建议核对前一天及以前的。
-        {data && !data.dutyConfigured && <div style={{ marginTop: 6 }}>还没配值班表：没人接手的问题，按当时在群里回复最多的人算当班负责人。要按排班算，到「设置 → 对公群 → 群筛选」里按班次配上。</div>}
         {!!data?.feedbackCounted && <div style={{ marginTop: 6 }}>AI 判断计入的客户投诉 / 抱怨 / 表扬 {data.feedbackCounted} 条，在下面「客户反馈」里看，判断错的可以改。</div>}
       </div>
 
@@ -457,7 +456,7 @@ const IssuesPage: React.FC = () => {
         <div className="filter-item">
           <span className="form-label">处理人</span>
           <Select value={handler} style={{ width: 160 }} onChange={(v) => reset(setHandler)(String(v ?? ''))}
-            optionList={[{ value: '', label: '全部' }, ...(data?.handlers || []).map((h) => ({ value: String(h.sysUserId), label: h.name })), { value: 'duty', label: '当班兜底的' }, { value: 'others', label: '不计入的人（商务等）' }, { value: 'none', label: '没人处理' }]} />
+            optionList={[{ value: '', label: '全部' }, ...(data?.handlers || []).map((h) => ({ value: String(h.sysUserId), label: h.name })), { value: 'at', label: '被 @ 了没回复的' }, { value: 'others', label: '不计入的人（商务等）' }, { value: 'none', label: '没人处理' }]} />
         </div>
         <div className="filter-item">
           <span className="form-label">状态</span>
@@ -477,7 +476,7 @@ const IssuesPage: React.FC = () => {
         <div className="panel" style={{ padding: 0, overflow: 'hidden' }}>
           <div style={{ padding: '20px 24px 4px' }} className="panel-title">每人汇总</div>
           <div className="footnote" style={{ padding: '0 24px 8px' }}>
-            共 {data.counts.all} 个问题；另有 {data.counts.others} 个是商务、客服等不计入的人处理的，{data.counts.nobody} 个没人处理{data.counts.duty ? `，${data.counts.duty} 个没人接手、归当班负责人` : ''}。
+            共 {data.counts.all} 个问题；另有 {data.counts.others} 个是商务、客服等不计入的人处理的，{data.counts.nobody} 个没人处理{data.counts.atAssigned ? `，${data.counts.atAssigned} 个我方没人回复、按被 @ 的人算` : ''}。
             问题数按难度加权（一般 ×1.5、疑难 ×2），交接完整的交接人和处理人各记 0.5 个；闭环率 = 各问题计分之和 ÷ 问题数（解决 1、交接完整 0.8、交接不完整 0.4、没解决 0；判断不了的确认前不算）。
           </div>
           <Table rowKey="sysUserId" size="middle" columns={personCols} dataSource={data.summary} pagination={false} />

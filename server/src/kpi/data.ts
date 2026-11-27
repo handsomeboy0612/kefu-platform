@@ -106,7 +106,7 @@ export async function coverage(projectId: string, deptId: number, begin: number,
 export interface IssueCredit { sysUserId: number; name: string; participate: boolean; at: number; roomId: string; thread: GroupThread }
 
 /**
- * 对公群的群问题按人拆开（技术支持部第二项、统计看板共用）：处理人按主管改过的算，没人接手的归当班负责人；
+ * 对公群的群问题按人拆开（技术支持部第二项、统计看板共用）：处理人按主管改过的算（只算自己回复的，或者我方没人回复时被 @ 的）；
  * 问题按客户第一次提问的时间算在哪天。交接完整的，交接人和处理人各记 0.5 个；不完整 / 没交接，交接人记 0、处理人记 1，
  * 交接人那一份的闭环按交接情况算（完整 0.8、不完整 0.4、没交接 0）。
  * 首响 / 均响 / 处理时长在把群问题写进会话记录时已经算好（issues/sessions.ts）。

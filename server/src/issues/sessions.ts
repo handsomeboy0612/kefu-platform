@@ -8,7 +8,6 @@ import { createHash } from 'crypto'
 import { execute, now, query } from '../db'
 import { listDepartments, type Department } from '../auth'
 import { deptProjectId } from '../members'
-import { dutyAt, getGroupConfig, type GroupConfig } from '../group/config'
 
 const WG_CHANNEL = -2
 const json = <T>(v: unknown, d: T): T => (v == null ? d : typeof v === 'string' ? (JSON.parse(v) as T) : (v as T))
@@ -30,41 +29,11 @@ export interface IssueMarkFields {
   override_handed_from?: string | null; override_handover?: string | null; override_upstream?: number | null; override_ignored?: number | null
 }
 
-/** 某个时间的当班负责人：roster = 按值班表；active = 没配值班表的时段，按前后 2 小时在对公群里回复最多的本部门参与考核的人 */
-export type DutyFn = (sec: number) => { sysUserId: number; how: 'roster' | 'active' } | null
-
-export async function dutyResolver(dept: Department, gc: GroupConfig): Promise<DutyFn> {
-  const projectId = await deptProjectId(dept)
-  const acts = await query<{ sys_user_id: number; send_time: number }>(
-    `SELECT w.sys_user_id, m.send_time FROM wg_messages m
-     JOIN wg_staff w ON w.user_id = m.sender_id AND w.sys_user_id > 0
-     JOIN members mm ON mm.project_id = ? AND mm.sys_user_id = w.sys_user_id AND mm.department_id = ? AND mm.participate = 1 AND mm.active = 1
-     WHERE m.is_staff = 1 AND m.is_self = 0`,
-    [projectId, dept.id]
-  )
-  return (sec: number) => {
-    if (!sec) return null
-    const roster = dutyAt(gc, sec)
-    if (roster) return { sysUserId: roster, how: 'roster' }
-    const near = new Map<number, { n: number; gap: number }>()
-    for (const a of acts) {
-      const gap = Math.abs(Number(a.send_time) - sec)
-      if (gap > 7200) continue
-      const o = near.get(Number(a.sys_user_id)) || { n: 0, gap: Infinity }
-      near.set(Number(a.sys_user_id), { n: o.n + 1, gap: Math.min(o.gap, gap) })
-    }
-    const best = [...near.entries()].sort((x, y) => y[1].n - x[1].n || x[1].gap - y[1].gap)[0]
-    return best ? { sysUserId: best[0], how: 'active' } : null
-  }
-}
-
 export interface EffIssue {
   /** 处理人（企微 user_id）；没人接手是 '' */
   handler: string
-  /** 没人接手、归当班负责人（SaleSmartly 成员 ID）；0 = 没有 */
-  dutySysUserId: number
-  /** roster = 按值班表；active = 按当时在群里回复最多的人 */
-  dutyHow: '' | 'roster' | 'active'
+  /** 我方没人回复、处理人是按问题里被 @ 的本部门的人算的 */
+  atAssigned: boolean
   status: string
   /** 晾着客户主管改成了不扣 */
   ignoredOff: boolean
@@ -80,17 +49,20 @@ export interface EffIssue {
 
 const has = (v: unknown): boolean => v !== null && v !== undefined
 
-/** 主管改过的优先，其次 AI 的；AI 没判出处理人、主管也没改的，归当班负责人 */
-export function effective(r: IssueMarkFields, duty: DutyFn): EffIssue {
-  const handler = has(r.override_handler) ? String(r.override_handler) : r.handler_user_id
-  const d = !has(r.override_handler) && !r.handler_user_id ? duty(Number(r.first_customer_at)) : null
+/**
+ * 主管改过的优先，其次 AI 的。问题只算到两种人头上：自己回复处理了的（AI 判的处理人），或者被 @ 了让他看的（商务、主管、客户 @ 了支持部的人）——
+ * AI 判出我方没人回复、主管也没改的，atOwner = 问题里第一个被 @ 的本部门的人；没人被 @ 就不算任何人。
+ */
+export function effective(r: IssueMarkFields, atOwner = ''): EffIssue {
+  const aiHandler = has(r.override_handler) ? String(r.override_handler) : r.handler_user_id
+  const atAssigned = !has(r.override_handler) && !r.handler_user_id && !!atOwner
+  const handler = atAssigned ? atOwner : aiHandler
   const ai = Number(r.difficulty_ai) || 1
   const handedFrom = handler ? (has(r.override_handed_from) ? String(r.override_handed_from) : r.handed_from || '') : ''
   const hoRaw = has(r.override_handover) ? String(r.override_handover) : r.handover || ''
   return {
     handler,
-    dutySysUserId: d?.sysUserId || 0,
-    dutyHow: d?.how || '',
+    atAssigned,
     status: r.override_status || r.status,
     ignoredOff: has(r.override_ignored) && !Number(r.override_ignored),
     difficulty: has(r.difficulty) ? Number(r.difficulty) : ai,
@@ -100,6 +72,14 @@ export function effective(r: IssueMarkFields, duty: DutyFn): EffIssue {
     handover: handedFrom && handedFrom !== handler ? (['full', 'part', 'none'].includes(hoRaw) ? hoRaw : 'none') : '',
     upstream: has(r.override_upstream) ? !!Number(r.override_upstream) : !!Number(r.upstream)
   }
+}
+
+/** 问题里第一个被 @ 的人（at_list 里的企微 user_id，按消息时间），只认 keep 里的（本部门的人） */
+export function firstAt(msgs: Array<{ at_list: unknown; send_time: number }>, keep: (userId: string) => boolean): string {
+  for (const m of [...msgs].sort((a, b) => Number(a.send_time) - Number(b.send_time))) {
+    for (const a of json<Array<{ user_id: string }>>(m.at_list, [])) if (a.user_id && keep(a.user_id)) return a.user_id
+  }
+  return ''
 }
 
 /** 查群问题时连上主管修改要带的列（表别名 i = wg_issues，k = wg_issue_marks） */
@@ -268,10 +248,15 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
     [projectId, dept.id]
   )
   const memberOf = new Map(staff.map((s) => [s.user_id, Number(s.sys_user_id)]))
-  const deptMembers = new Set((await query<{ sys_user_id: number }>('SELECT sys_user_id FROM members WHERE project_id = ? AND department_id = ?', [projectId, dept.id])).map((m) => Number(m.sys_user_id)))
   const ctx = await metricsCtx()
-  const gc = await getGroupConfig(dept)
-  const duty = await dutyResolver(dept, gc)
+  // 我方没人回复的问题：找问题里被 @ 的本部门的人
+  const noHandler = issues.filter((r) => !has(r.override_handler) && !r.handler_user_id)
+  const atIds = [...new Set(noHandler.flatMap((r) => json<string[]>(r.message_ids, [])))]
+  const atMsgs = new Map<string, { at_list: unknown; send_time: number }>()
+  for (let i = 0; i < atIds.length; i += 1000) {
+    for (const m of await query<{ msg_id: string; at_list: unknown; send_time: number }>('SELECT msg_id, at_list, send_time FROM wg_messages WHERE msg_id IN (?)', [atIds.slice(i, i + 1000)])) atMsgs.set(m.msg_id, m)
+  }
+  const atOwnerOf = (r: Row): string => firstAt(json<string[]>(r.message_ids, []).map((id) => atMsgs.get(id)).filter((m): m is { at_list: unknown; send_time: number } => !!m), (u) => memberOf.has(u))
   // 最近两天的问题，「晾着客户」可能还在变（最后一句一直没人回，算到现在），每小时重算一次
   const hour = Math.floor(now() / 3600)
   const recentDay = new Date((now() - 86400) * 1000)
@@ -279,13 +264,13 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
 
   const want = new Map<string, { r: Row; e: EffIssue; sysUserId: number; handedFromSys: number; msgIds: string[]; sig: string }>()
   for (const r of issues) {
-    const e = effective(r, duty)
-    // 处理人是本部门成员的挂到他名下；没人接手的挂到当班负责人名下
-    const sysUserId = e.handler ? memberOf.get(e.handler) || 0 : deptMembers.has(e.dutySysUserId) ? e.dutySysUserId : 0
+    const e = effective(r, !has(r.override_handler) && !r.handler_user_id ? atOwnerOf(r) : '')
+    // 处理人（自己回复的，或者被 @ 了的）是本部门成员的，挂到他名下
+    const sysUserId = e.handler ? memberOf.get(e.handler) || 0 : 0
     if (!sysUserId) continue
     const handedFromSys = e.handedFrom ? memberOf.get(e.handedFrom) || 0 : 0
     const msgIds = json<string[]>(r.message_ids, [])
-    const sig = sha(JSON.stringify(['m8', r.day >= recent ? hour : 0, r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
+    const sig = sha(JSON.stringify(['m9', r.day >= recent ? hour : 0, r.id, e, sysUserId, handedFromSys, r.summary, r.room_name, msgIds, Number(r.first_customer_at), Number(r.resolved_at)]))
     want.set(issueSessionId(dept.id, r.room_id, r.anchor_msg_id), { r, e, sysUserId, handedFromSys: handedFromSys === sysUserId ? 0 : handedFromSys, msgIds, sig })
   }
 
@@ -318,7 +303,7 @@ async function refresh(dept: Department): Promise<{ upserted: number; removed: n
       const x = issueMetrics(ms, w.e.handler, ctx, w.e.status, Number(w.r.resolved_at))
       const first = x.firstCustomerAt || Number(w.r.first_customer_at) || 0
       return [projectId, id, 'wg', w.r.room_id.slice(0, 128), w.sig, w.r.id, w.e.status, (w.r.summary || '').slice(0, 255),
-        x.firstSec, x.avgSec, x.resolveSec, x.syncGapSec, w.e.difficulty, w.handedFromSys, w.handedFromSys ? w.e.handover : '', w.e.upstream ? 1 : 0, w.e.handler ? 0 : 1,
+        x.firstSec, x.avgSec, x.resolveSec, x.syncGapSec, w.e.difficulty, w.handedFromSys, w.handedFromSys ? w.e.handover : '', w.e.upstream ? 1 : 0, w.e.atAssigned ? 1 : 0,
         w.e.ignoredOff ? 0 : x.ignored1h, w.e.ignoredOff ? 0 : x.ignored2h, '',
         (w.r.room_name || w.r.room_id).slice(0, 255), w.sysUserId, WG_CHANNEL, 0, x.start || first, x.end || first, first || x.start, 0, 0, '',
         ms.length, x.customerCnt, x.staffCnt, 1, 0, t]
